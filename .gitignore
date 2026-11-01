@@ -1,0 +1,9 @@
+.DS_Store
+reference-docs/
+codex-harness.md
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.env

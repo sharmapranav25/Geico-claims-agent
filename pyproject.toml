@@ -1,0 +1,20 @@
+[project]
+name = "geico-voice-agent"
+version = "0.1.0"
+description = "Guava voice agent for GEICO auto claims intake (Track A take-home)"
+authors = [
+    { name = "Pranav Sharma", email = "pranavsharma@cpp.edu" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "guava-sdk>=0.50.0",
+    "python-dotenv>=1.2.4",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
