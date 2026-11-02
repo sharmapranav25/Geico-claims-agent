@@ -34,7 +34,8 @@ class SDKBridge(CallBridge):
             task_id, objective=objective,
             checklist=[guava.Todo(description, key=key) for key, description in todos] + [
                 guava.Field(key=field.key, description=field.description,
-                            field_type=field.field_type, required=field.required)
+                            field_type=field.field_type, required=field.required,
+                            choices=list(field.choices))
                 for field in fields
             ],
         )
@@ -96,7 +97,7 @@ def on_call_received(call_info: guava.CallInfo) -> guava.IncomingCallAction:
 
 
 def on_call_start(call: guava.Call) -> None:
-    coordinator.start_routing(call, SDK_BRIDGE)
+    coordinator.start_call(call, SDK_BRIDGE)
     logger.info("Call started")
 
 
@@ -140,6 +141,7 @@ if __name__ == "__main__":
     channel = parser.add_mutually_exclusive_group(required=True)
     channel.add_argument("--phone", action="store_true", help="Listen for inbound calls.")
     channel.add_argument("--local", action="store_true", help="Start a local test call.")
+    channel.add_argument("--chat", action="store_true", help="Start an interactive text test session.")
     args = parser.parse_args()
 
     required = ("GUAVA_API_KEY", "GUAVA_AGENT_NUMBER") if args.phone else ("GUAVA_API_KEY",)
@@ -149,5 +151,7 @@ if __name__ == "__main__":
 
     if args.phone:
         agent.listen_phone(os.environ["GUAVA_AGENT_NUMBER"])
+    elif args.chat:
+        agent.chat()
     else:
         agent.call_local()

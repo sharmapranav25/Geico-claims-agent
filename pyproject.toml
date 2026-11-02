@@ -18,3 +18,9 @@ package = false
 dev = [
     "pytest>=9.2.0",
 ]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not agent_sim'"
+markers = [
+    "agent_sim: opt-in real-model Guava test sessions (requires API key and mock API)",
+]

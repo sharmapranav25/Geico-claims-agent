@@ -26,10 +26,10 @@ def test_live_policy_number_validation():
 
 
 @pytest.mark.parametrize('name,phone,expected', [
-    ('  AVERY   MORGAN ', '+1 (628) 268-8763', True),
-    ('Different Person', '628-268-8763', False),
+    ('  AVERY   MORGAN ', '+1 (628) 268-8753', True),
+    ('Different Person', '628-268-8753', False),
     ('Avery Morgan', '555-555-5555', False),
-    ('', '628-268-8763', False),
+    ('', '628-268-8753', False),
     ('Avery Morgan', '', False),
 ])
 def test_live_identity_matching(name, phone, expected):
@@ -43,7 +43,7 @@ def test_registered_completion_branches_and_fields():
         from agent.guava_adapter import SDKBridge
         agent = guava.Agent(name='Test')
     bridge = SDKBridge()
-    policy_lookup.register(agent, bridge)
+    policy_lookup.register(agent, bridge, lambda call, profile: coordinator.on_verified(call, profile, bridge))
     assert set(agent._on_validate_handlers) == {'policy_number'}
     assert set(agent._on_task_complete_handlers) == {policy_lookup.TASK_ID}
     commands = []
@@ -57,7 +57,7 @@ def test_registered_completion_branches_and_fields():
         assert coordinator.CALL_ENDING_RULE in task.objective
         call.set_field('policy_number', 'GEC-0001')
         call.set_field('caller_name', caller_name)
-        call.set_field('caller_phone', '(628) 268-8763')
+        call.set_field('caller_phone', '(628) 268-8753')
         assert agent._on_validate_handlers['policy_number'](call, 'GEC-0001') is True
         agent._on_task_complete_handlers[policy_lookup.TASK_ID](call)
         assert len(call._command_queue) == 2
@@ -65,7 +65,7 @@ def test_registered_completion_branches_and_fields():
         assert isinstance(result, SetTaskCommand)
         assert coordinator.CALL_ENDING_RULE in result.objective
         commands.append(result)
-    assert commands[0].task_id == 'policy-verified-placeholder'
+    assert commands[0].task_id == coordinator.REQUEST_TASK_ID
     assert 'Identity is verified for policy GEC-0001' in commands[0].objective
     assert commands[1].task_id == 'policy-verification-mismatch'
     assert 'could not be verified' in commands[1].objective

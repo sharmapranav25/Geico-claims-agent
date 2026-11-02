@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 ValidationResult = Literal[True] | tuple[Literal[False], str]
-CallHandler = Callable[[Any], None]
+CallHandler = Callable[[Any], str | None]
 Validator = Callable[[Any, Any], ValidationResult]
 
 
@@ -13,8 +13,9 @@ Validator = Callable[[Any, Any], ValidationResult]
 class FieldDefinition:
     key: str
     description: str
-    field_type: Literal["text"] = "text"
+    field_type: Literal["text", "multiple_choice"] = "text"
     required: bool = True
+    choices: Sequence[str] = ()
 
 
 class CallBridge(Protocol):

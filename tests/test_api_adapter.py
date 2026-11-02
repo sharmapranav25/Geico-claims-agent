@@ -36,7 +36,7 @@ def test_list_and_read_seeded_policy(adapter):
     assert isinstance(profile, api.PolicyProfile)
     assert profile.policy_number == "GEC-0001"
     assert profile.name == "Avery Morgan"
-    assert profile.phone == "628-268-8763"
+    assert profile.phone == "628-268-8753"
     assert profile.vehicles[0].vehicle_id == "V01-1"
     assert profile.drivers[0].name == profile.name
     assert profile.beneficiaries
