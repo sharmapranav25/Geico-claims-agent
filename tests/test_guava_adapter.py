@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-from guava import AcceptCall, SuggestedAction, Todo
+from guava import AcceptCall
 from guava.commands import SendInstructionCommand, SetTaskCommand
 from guava.testing import MockCall
 
@@ -32,22 +32,12 @@ def test_on_call_received_accepts_call(adapter):
     assert isinstance(action, AcceptCall)
 
 
-def test_on_call_start_enqueues_routing_task(adapter):
+def test_on_call_start_delegates_to_coordinator(adapter, monkeypatch):
+    start = Mock()
+    monkeypatch.setattr(adapter.coordinator, "start_routing", start)
     call = MockCall()
-
     adapter.on_call_start(call)
-
-    assert len(call._command_queue) == 1
-    command = call._command_queue[0]
-    assert isinstance(command, SetTaskCommand)
-    assert command.task_id == adapter.INTEGRATION_TASK_ID
-    assert command.objective.strip()
-    assert command.objective == adapter.INTEGRATION_OBJECTIVE
-    assert len(command.action_items) == 1
-    assert isinstance(command.action_items[0], Todo)
-    assert command.action_items[0].key == "clarify-request"
-    assert "clarifying question" in command.objective
-    assert adapter.CALL_ENDING_RULE in command.objective
+    start.assert_called_once_with(call, adapter.SDK_BRIDGE)
 
 
 def test_end_call_success_enqueues_sign_off(adapter):
@@ -75,74 +65,18 @@ def test_end_call_unresolved_enqueues_sign_off(adapter, reason):
         assert reason in command.instruction
 
 
-@pytest.mark.parametrize("result", [
-    None,
-    [SuggestedAction(key="intent_a", description="Own/relevant policy loss")],
-    [SuggestedAction(key="intent_a"), SuggestedAction(key="intent_b")],
-])
-def test_action_request_preserves_classifier_result(adapter, monkeypatch, result):
-    classify = Mock(return_value=result)
-    monkeypatch.setattr(adapter.IntentRecognizer, "classify", classify)
-    call = MockCall()
-    assert adapter.agent._on_action_requested(call, "I need to report damage") is result
-    classify.assert_called_once_with("I need to report damage")
-    assert call._command_queue == []
-
-
-def test_claim_branches_enqueue_distinct_placeholder_tasks(adapter):
-    commands = []
-    for key, label in (("intent_a", "Intent A"), ("intent_b", "Intent B")):
-        call = MockCall()
-        adapter.agent._on_action_handlers[key](call)
-        assert len(call._command_queue) == 1
-        command = call._command_queue[0]
-        assert isinstance(command, SetTaskCommand)
-        assert label + " selected" in command.objective
-        assert "not implemented yet" in command.objective
-        assert adapter.CALL_ENDING_RULE in command.objective
-        commands.append(command)
-    assert commands[0].task_id != commands[1].task_id
-    assert commands[0].objective != commands[1].objective
-
-
-def test_immediate_danger_or_other_sends_instruction(adapter):
-    call = MockCall()
-    adapter.agent._on_action_handlers["immediate_danger_or_other"](call)
-    assert len(call._command_queue) == 1
-    command = call._command_queue[0]
-    assert isinstance(command, SendInstructionCommand)
-    assert "local emergency services" in command.instruction
-    assert "No escalation or transfer path is implemented" in command.instruction
-    assert adapter.CALL_ENDING_RULE in command.instruction
-
-
-def test_build_agent_configures_identity_and_registers_handlers(adapter, monkeypatch):
-    classify = Mock(return_value=None)
-    monkeypatch.setattr(adapter.IntentRecognizer, "classify", classify)
-    with patch("guava.agent.Client"):
-        custom = adapter.build_agent(
-            name="Sam", organization="Test Organization", purpose="Route test requests", voice="test-voice",
-        )
+def test_build_agent_configures_identity_and_registers_handlers(adapter):
+    with patch("guava.agent.Client"), patch.object(adapter.coordinator, "register", wraps=adapter.coordinator.register) as register:
+        custom = adapter.build_agent(name="Sam", organization="Test Organization", purpose="Test purpose", voice="test-voice")
+    register.assert_called_once_with(custom, adapter.SDK_BRIDGE)
     assert (custom._name, custom._organization, custom._purpose, custom._voice) == (
-        "Sam", "Test Organization", "Route test requests", "test-voice",
+        "Sam", "Test Organization", "Test purpose", "test-voice",
     )
-    assert adapter.agent._name == "Alex"
     assert custom._on_call_received is adapter.on_call_received
     assert custom._on_call_start is adapter.on_call_start
     assert custom._on_caller_speech is adapter.on_caller_speech
     assert custom._on_agent_speech is adapter.on_agent_speech
-    assert set(custom._on_action_handlers) == set(adapter.INTENT_CHOICES)
-    assert custom._on_action_requested(MockCall(), "unclear") is None
-    classify.assert_called_once_with("unclear")
-    for key in custom._on_action_handlers:
-        call = MockCall()
-        custom._on_action_handlers[key](call)
-        assert len(call._command_queue) == 1
-    assert custom._on_escalate is None
-    assert custom._on_question is None
-    assert custom._on_task_complete_generic is None
-    assert custom._on_task_complete_handlers == {}
-    assert custom._search_query_handlers == {}
+    assert set(custom._on_action_handlers) == set(adapter.coordinator.INTENT_CHOICES)
 
 
 def test_build_agent_default_and_overridden_pronunciations(adapter):
@@ -153,3 +87,47 @@ def test_build_agent_default_and_overridden_pronunciations(adapter):
     assert custom._tts_replacements == {"GEICO": "guy-koh", "ACME": "Ack-mee"}
     # The SDK normalizes an explicit empty mapping to None.
     assert disabled._tts_replacements is None
+
+
+def test_bridge_translates_fields_and_reads_values(adapter):
+    from agent.bridge import FieldDefinition
+
+    call = MockCall()
+    adapter.SDK_BRIDGE.set_task(
+        call, 'example', 'Collect test values', todos=[('intro', 'Explain the task')],
+        fields=[FieldDefinition('required_name', 'Caller name'),
+                FieldDefinition('optional_note', 'Optional note', required=False)],
+    )
+    command, = call._command_queue
+    assert isinstance(command, SetTaskCommand)
+    assert command.task_id == 'example' and command.objective == 'Collect test values'
+    todo, required, optional = command.action_items
+    assert todo.item_type == 'todo' and todo.key == 'intro'
+    assert (required.key, required.description, required.field_type, required.required) == (
+        'required_name', 'Caller name', 'text', True,
+    )
+    assert optional.key == 'optional_note' and optional.required is False
+    assert call._field_keys_by_task_id['example'] == ['required_name', 'optional_note']
+    call.set_field('required_name', 'Alex')
+    assert adapter.SDK_BRIDGE.get_field(call, 'required_name') == 'Alex'
+    assert adapter.SDK_BRIDGE.get_field(call, 'missing') is None
+
+
+def test_bridge_registers_validation_and_completion(adapter):
+    from guava.events import TaskCompletedEvent
+    from agent.bridge import FieldDefinition
+
+    call = MockCall()
+    validator = Mock(return_value=(False, 'Please repeat the name'))
+    completed = Mock()
+    adapter.SDK_BRIDGE.register_validator(adapter.agent, 'test_name', validator)
+    adapter.SDK_BRIDGE.register_task_complete(adapter.agent, 'test-task', completed)
+    adapter.SDK_BRIDGE.set_task(call, 'test-task', 'Test', fields=[FieldDefinition('test_name', 'Name')])
+    call.set_field('test_name', 'Alex')
+    adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id='test-task'))
+    validator.assert_called_once_with(call, 'Alex')
+    completed.assert_not_called()
+    assert len(call._command_queue) == 2  # SDK, not the workflow, retries validation.
+    validator.return_value = True
+    adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id='test-task'))
+    completed.assert_called_once_with(call)
