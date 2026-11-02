@@ -17,9 +17,7 @@ CALL_ENDING_RULE = (
     "confirmed there is nothing else they need. Do not treat silence or your "
     "own assessment that the task is finished as that confirmation. When the "
     "caller explicitly confirms they are done, acknowledge it. The application "
-    "should then end the call through end_call_success if the task was completed "
-    "or end_call_unresolved otherwise. These helpers are not wired into this "
-    "placeholder task yet; do not independently hang up."
+    "ends the call; do not independently hang up."
 )
 # Keeps every later instruction from re-asking what the caller already gave.
 KEEP_CONTEXT_RULE = (
@@ -48,6 +46,7 @@ INTENT_CHOICES = {
 }
 
 STORE = InMemoryStateStore()
+CONTINUE_TASK = "Noted. Continue your current task without restarting it or re-asking for anything already given."
 
 
 def state_for(call, bridge):
@@ -118,10 +117,13 @@ def on_request_confirmed(call, bridge: CallBridge) -> None:
 
 def on_intent_a(call) -> str:
     # Never restart a task here: repeating set_task discards its collected progress.
-    return "Noted. Continue your current task without restarting it or re-asking for anything already given."
+    return CONTINUE_TASK
 
 
-def on_intent_b(call, bridge: CallBridge) -> None:
+def on_intent_b(call, bridge: CallBridge) -> str | None:
+    state = state_for(call, bridge)
+    if state.verified_profile is not None or state.result('start_assistance') is not None:
+        return CONTINUE_TASK
     bridge.set_task(call,
         "intent-b-placeholder",
         objective=(

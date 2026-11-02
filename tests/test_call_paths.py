@@ -88,7 +88,7 @@ def test_call_path(scenario):
         assert 'confirm-request' in tasks
     elif scenario == 'claim_filled_once':
         assert 'Claim draft saved' in outcomes
-        assert 'claim-details-saved' in tasks
+        assert 'review-claim' in tasks
         assert tasks.count('verify-policy') == 1
     elif scenario == 'wrong_identity':
         assert 'Policy completion mismatch' in outcomes
@@ -181,7 +181,7 @@ def run_scenario(scenario):
                 # the caller's identity or inventing missing loss information.
                 for attempt in range(6):
                     if any(task in tasks for task in (
-                        'claim-details-saved' if scenario == 'claim_filled_once' else 'confirm-request',
+                        'review-claim' if scenario == 'claim_filled_once' else 'confirm-request',
                         'policy-verification-mismatch', 'policy-verification-unavailable',
                     )):
                         break

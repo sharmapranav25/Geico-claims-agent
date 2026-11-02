@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -38,6 +39,9 @@ class Scenario:
     callback_written: bool = False
     callback_slot: tuple[int, int] | None = None
     pending_step: int | None = None
+    claims_added: int | None = None
+    claim_number_spoken: bool = False
+    expect_hangup: bool = False
 
 
 def identity(number, name, phone='628-268-8753'):
@@ -46,9 +50,12 @@ def identity(number, name, phone='628-268-8753'):
 
 
 SCENARIOS = (
-    Scenario('happy_path', None, (identity('GEC-0010', 'Logan Reed'), CLAIM, "No, that's everything for now."),
-             terminal_task='claim-details-saved', required_logs=('Policy completion verified', 'Claim draft saved'),
-             draft_policy='GEC-0010', draft_contains='Main'),
+    Scenario('happy_path', None, (identity('GEC-0010', 'Logan Reed'), CLAIM,
+             'Yes, please submit it.', "No, that's everything."),
+             required_tasks=('review-claim', 'claim-submitted'),
+             required_logs=('Policy completion verified', 'Claim draft saved', 'Claim submitted'),
+             claims_added=1, claim_number_spoken=True, expect_hangup=True,
+             agent_must_contain=('would you like me to submit', 'claims portal')),
     Scenario('hard_1_role', 1, ("I'm calling for my mother, Morgan Hayes. Her policy number is GEC-0011. "
                               'Her phone is 628-268-8753. I need to report that her car was stolen.',),
              forbidden_tasks=('confirm-request', 'collect-claim'),
@@ -71,8 +78,9 @@ SCENARIOS = (
              draft_policy='GEC-0011', draft_contains='Oak',
              evaluate_pass=('The agent updates the location and asks the caller to review the revised details again.',), pending_step=4),
     Scenario('hard_6_permission', 6, (identity('GEC-0012', 'Parker Diaz'), CLAIM, "No, please don't submit anything."),
-             forbidden_logs=('Claim submitted',),
-             evaluate_pass=('The agent read the details back and asked for permission, then explained nothing was submitted.',), pending_step=3),
+             terminal_task='claim-not-submitted', required_tasks=('review-claim',),
+             required_logs=('Claim draft saved', 'Claim not submitted'), forbidden_logs=('Claim submitted',),
+             claims_added=0, agent_must_contain=('would you like me to submit',)),
     Scenario('hard_7_api_down', 7, ('Yes, please.', "Yes, I'd like to schedule a callback.", 'Next Tuesday at 10 AM. Call me at 628-268-8753.'),
              api_down=True, terminal_task='callback-saved',
              required_tasks=('assistance-offer', 'callback-offer', 'collect-callback'), forbidden_tasks=('verify-policy',),
@@ -118,6 +126,13 @@ def test_golden(scenario, tmp_path):
     started = monotonic()
     callback = tmp_path / 'callbacks.jsonl'
     env = dict(os.environ, CALLBACK_FILE=str(callback))
+    policy_number = None
+    before_count = None
+    if scenario.claims_added is not None or scenario.claim_number_spoken:
+        from agent import api_adapter
+        policy_number = re.search(r'GEC-\d{4}', ' '.join(scenario.turns)).group()
+        with api_adapter.APIAdapter() as api:
+            before_count = len(api.get_policy(policy_number).claims)
     timed_out = False
     try:
         result = subprocess.run([sys.executable, '-u', str(Path(__file__).resolve()), scenario.id],
@@ -161,6 +176,18 @@ def test_golden(scenario, tmp_path):
         assert normalize_agent_text(assistance.UNAVAILABLE_LINE) in agent_lines
         assert normalize_agent_text(assistance.NO_REP_LINE) in agent_lines
         assert normalize_agent_text('how can i help') not in agent_lines
+    if policy_number is not None:
+        with api_adapter.APIAdapter() as api:
+            claims = api.get_policy(policy_number).claims
+        if scenario.claims_added is not None:
+            assert len(claims) - before_count == scenario.claims_added
+        if scenario.claim_number_spoken:
+            assert claims
+            number = ''.join(char for char in claims[-1].claim_number.casefold() if char.isalnum())
+            spoken = ''.join(char for char in agent_lines if char.isalnum())
+            assert number in spoken
+    if scenario.expect_hangup:
+        assert latest.get('termination_reason') == 'bot-hangup'
     if scenario.evaluate_pass:
         assert scenario.pending_step is not None
         evaluations = [event for event in events if event['kind'] == 'evaluation']
@@ -286,6 +313,8 @@ def run_scenario(scenario):
                             emit('evaluation', passed=False, reason=str(error))
                         else:
                             emit('evaluation', passed=True)
+                    if scenario.expect_hangup:
+                        session.wait_for_end()
                     if scenario.terminal_task:
                         while scenario.terminal_task not in tasks:
                             session.recv()
@@ -295,6 +324,7 @@ def run_scenario(scenario):
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous_alarm)
                 snapshot(session)
+        snapshot(session)
 
 
 if __name__ == '__main__':

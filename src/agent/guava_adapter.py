@@ -45,6 +45,10 @@ class SDKBridge(CallBridge):
         call.send_instruction(instruction)
 
     @staticmethod
+    def end_call_success(call):
+        end_call_success(call)
+
+    @staticmethod
     def get_field(call, key):
         return call.get_field(key)
 

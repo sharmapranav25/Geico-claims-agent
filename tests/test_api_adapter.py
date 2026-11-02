@@ -131,3 +131,32 @@ def test_unknown_policy(adapter):
         adapter.get_policy("UNKNOWN-POLICY")
     assert error.value.status_code == 404
     assert error.value.detail == "Policy not found"
+
+
+def test_live_submission_reference_replay_adds_one_claim(adapter):
+    from uuid import uuid4
+
+    number = 'GEC-0015'
+    before = adapter.get_policy(number)
+    adapter.update_claim_draft(number, api.ClaimDraftUpdate(
+        occurred_at='2026-11-01T15:00:00-08:00', location='Test lot',
+        description='Replay test', vehicle_id=before.vehicles[0].vehicle_id,
+    ))
+    reference = f'sub-{uuid4().hex}'
+    first = adapter.submit_claim_draft(number, submission_reference=reference)
+    replay = adapter.submit_claim_draft(number, submission_reference=reference)
+    assert first == replay
+    assert first.submission_reference == reference
+    assert len(adapter.get_policy(number).claims) == len(before.claims) + 1
+    assert adapter.get_policy(number).open_draft is None
+
+
+@pytest.mark.parametrize('reference', [None, 'sub-request-body'])
+def test_submission_body_only_when_reference_given(adapter, monkeypatch, reference):
+    from unittest.mock import Mock
+
+    request = Mock()
+    monkeypatch.setattr(adapter, '_request', request)
+    adapter.submit_claim_draft('GEC-0015', submission_reference=reference)
+    assert request.call_args.args == ('POST', 'policies/GEC-0015/claims/draft/submit', api.SubmittedClaim)
+    assert request.call_args.kwargs == ({} if reference is None else {'json': {'submission_reference': reference}})

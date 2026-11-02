@@ -1,7 +1,8 @@
-"""Collect loss facts for a verified caller and save them as a claim draft."""
+"""Collect, review and submit claims for a verified caller."""
 
 import logging
 from datetime import datetime
+from uuid import uuid4
 
 from .. import api_adapter
 from ..action_loop import Action, advance
@@ -10,6 +11,10 @@ from ..bridge import CallBridge, FieldDefinition
 logger = logging.getLogger(__name__)
 
 TASK_ID = "collect-claim"
+REVIEW_TASK_ID = "review-claim"
+SUBMITTED_TASK_ID = "claim-submitted"
+CLAIM_FIELDS = ("vehicle", "occurred_at", "location", "description", "loss_type")
+PORTAL_LINE = "You can upload supporting photos and documents later through your GEICO claims portal."
 LOSS_TYPES = ("collision", "theft", "weather", "other")
 
 
@@ -58,18 +63,30 @@ def start(call, bridge: CallBridge, profile):
     )
 
 
-def _announce_saved(call, bridge):
-    from ..coordinator import CALL_ENDING_RULE
+def current_claim_fields(call, bridge):
+    return {key: bridge.get_field(call, key) for key in CLAIM_FIELDS}
+
+
+def review_line(fields):
+    date = parse_occurred_at(fields['occurred_at']).strftime('%A, %B %-d at %-I:%M %p')
+    return (f"Here is what I have. Vehicle: {fields['vehicle']}. When: {date}. "
+            f"Where: {fields['location']}. What happened: {fields['description']}. "
+            f"Type of loss: {fields['loss_type']}. Would you like me to submit this claim?")
+
+
+def _start_review(call, bridge):
+    from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
 
     logger.info('Claim draft saved')
-    bridge.set_task(call,
-        "claim-details-saved",
-        objective=(
-            "The loss details are saved as a draft. Tell the caller that. It is "
-            "not a submitted claim and has no claim number yet; reviewing and "
-            "submitting is not implemented, so do not claim to do it. " + CALL_ENDING_RULE
-        ),
+    fields = current_claim_fields(call, bridge)
+    bridge.set_task(call, REVIEW_TASK_ID, say=[review_line(fields)],
+        fields=[FieldDefinition('submission_decision', 'Whether the caller explicitly approved submitting these details.',
+                                field_type='multiple_choice', choices=('approve', 'decline'))],
+        objective=("Record approve only if the caller clearly says yes to submitting. Silence, uncertainty or a request "
+                   "to change anything is decline. If they want to change a detail, say corrections are not available yet. "
+                   "Do not say a claim was submitted. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE),
     )
+    return fields
 
 
 def _announce_failed(call, bridge):
@@ -109,17 +126,98 @@ def next_action(call, state, bridge, on_unavailable):
                 return api.update_claim_draft(profile.policy_number, update)
 
         return Action('save_draft', 'api', save_draft, (api_adapter.APIError, ValueError))
-    if state.result('announce_save') is not None:
+    if state.result('start_review') is not None or state.result('announce_save') is not None:
         return None
+    if saved.ok:
+        return Action('start_review', 'guava', lambda: _start_review(call, bridge))
     def announce_save():
-        if saved.ok:
-            return _announce_saved(call, bridge)
         if isinstance(saved.data, (api_adapter.APIUnavailableError, api_adapter.APIResponseError)):
             logger.info('Claim draft save failed')
             return on_unavailable(call)
         return _announce_failed(call, bridge)
 
     return Action('announce_save', 'guava', announce_save)
+
+
+def next_submit_action(call, state, bridge, on_unavailable):
+    if state.verified_profile is None:
+        return None
+    submitted = state.result('submit_claim')
+    if submitted is None:
+        if state.result('announce_not_submitted') is not None:
+            return None
+        reviewed = state.result('start_review')
+        fields = current_claim_fields(call, bridge)
+        if reviewed is None or bridge.get_field(call, 'submission_decision') != 'approve' or fields != reviewed.data:
+            return Action('announce_not_submitted', 'guava', lambda: _announce_not_submitted(call, bridge))
+        state.approved_fields = fields
+        if state.submission_reference is None:
+            state.submission_reference = f'sub-{uuid4().hex}'
+
+        def submit_claim():
+            with api_adapter.APIAdapter() as api:
+                return api.submit_claim_draft(state.verified_profile.policy_number,
+                                              submission_reference=state.submission_reference)
+
+        return Action('submit_claim', 'api', submit_claim, (api_adapter.APIError,))
+    if state.result('announce_submission') is not None:
+        return None
+
+    def announce_submission():
+        if submitted.ok:
+            return _announce_claim(call, bridge, submitted.data.claim_number)
+        if isinstance(submitted.data, (api_adapter.APIUnavailableError, api_adapter.APIResponseError)):
+            logger.info('Claim submission unavailable')
+            return on_unavailable(call)
+        return _announce_submit_failed(call, bridge)
+
+    return Action('announce_submission', 'guava', announce_submission)
+
+
+def _announce_claim(call, bridge, claim_number):
+    from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
+
+    logger.info('Claim submitted')
+    bridge.set_task(call, SUBMITTED_TASK_ID,
+        say=[f'Your claim has been submitted. Your claim number is {claim_number}. {PORTAL_LINE} Is there anything else you need?'],
+        fields=[FieldDefinition('needs_more_help', 'Whether the caller needs anything else.',
+                                field_type='multiple_choice', choices=('yes', 'no'))],
+        objective='Record whether the caller needs anything else. Do not decide fault, coverage or payment. '
+                  + KEEP_CONTEXT_RULE + CALL_ENDING_RULE,
+    )
+
+
+def _announce_not_submitted(call, bridge):
+    from ..coordinator import CALL_ENDING_RULE
+
+    logger.info('Claim not submitted')
+    bridge.set_task(call, 'claim-not-submitted', objective=(
+        'Nothing was submitted and there is no claim number. Explain this without pressure. The details are saved '
+        'as a draft, which is not a claim. Do not promise a resume text or that the portal can finish it. ' + CALL_ENDING_RULE
+    ))
+
+
+def _announce_submit_failed(call, bridge):
+    from ..coordinator import CALL_ENDING_RULE
+
+    logger.info('Claim submission failed')
+    bridge.set_task(call, 'claim-submit-failed', objective=(
+        'The claim could not be submitted and there is no claim number. Say so honestly. '
+        'Do not claim to transfer the caller. ' + CALL_ENDING_RULE
+    ))
+
+
+def next_close_action(call, state, bridge):
+    from ..coordinator import CALL_ENDING_RULE
+
+    if state.result('close_call') is not None:
+        return None
+    if bridge.get_field(call, 'needs_more_help') == 'no':
+        return Action('close_call', 'guava', lambda: bridge.end_call_success(call))
+    return Action('close_call', 'guava', lambda: bridge.set_task(call, 'claim-more-help', objective=(
+        'This demo only opens new loss reports. Explain that limit without inventing contact details '
+        'or claiming to transfer the caller. ' + CALL_ENDING_RULE
+    )))
 
 
 def register(agent, bridge: CallBridge, get_state, on_unavailable):
@@ -131,5 +229,13 @@ def register(agent, bridge: CallBridge, get_state, on_unavailable):
     def on_claim_complete(call):
         advance(get_state(call), lambda state: next_action(call, state, bridge, on_unavailable))
 
+    def on_review_complete(call):
+        advance(get_state(call), lambda state: next_submit_action(call, state, bridge, on_unavailable))
+
+    def on_submitted_complete(call):
+        advance(get_state(call), lambda state: next_close_action(call, state, bridge))
+
     bridge.register_validator(agent, "occurred_at", on_validate_occurred_at)
     bridge.register_task_complete(agent, TASK_ID, on_claim_complete)
+    bridge.register_task_complete(agent, REVIEW_TASK_ID, on_review_complete)
+    bridge.register_task_complete(agent, SUBMITTED_TASK_ID, on_submitted_complete)

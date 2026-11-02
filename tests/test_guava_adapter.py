@@ -215,3 +215,11 @@ def test_policy_validation_failure_retries_without_completion(adapter, monkeypat
     client.get_policy.assert_called_once_with('GEC-9999')
     assert len(call._command_queue) == 2
     assert 'Policy validation not found' in caplog.messages
+
+
+def test_bridge_end_call_success_enqueues_existing_sign_off(adapter):
+    call = MockCall()
+    adapter.SDK_BRIDGE.end_call_success(call)
+    command, = call._command_queue
+    assert isinstance(command, SendInstructionCommand)
+    assert 'End on a positive note. Say exactly: "I hope you have a great day."' in command.instruction

@@ -2,30 +2,37 @@
 
 import itertools
 from functools import partial
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from test_api_outage import FakeBridge, PROFILE, adapter, call_fields, callback_path
+from test_api_outage import FakeBridge as BaseBridge, PROFILE, adapter, call_fields, callback_path
 from agent import api_adapter, coordinator
 from agent.call_state import ActionResult, CallState
 from agent.workflows import assistance, claim_intake, policy_lookup
 
 
+class FakeBridge(BaseBridge):
+    def end_call_success(self, call):
+        self.tasks.append(SimpleNamespace(task_id='end-call-success'))
+
+
 COMBINATIONS = list(itertools.product(
     (True, False), (True, False), (True, False), (True, False),
     (coordinator.REPORT_OWN_LOSS, coordinator.OTHER_REQUEST), (True, False),
-    ('yes', 'no'), ('yes', 'no'),
+    ('yes', 'no'), ('yes', 'no'), ('approve', 'decline'), (True, False), ('yes', 'no'),
 ))
 
 
 def run_call(monkeypatch, options):
-    api_up, policy_found, name_ok, phone_ok, request_type, save_ok, wants_rep, wants_callback = options
+    api_up, policy_found, name_ok, phone_ok, request_type, save_ok, wants_rep, wants_callback, decision, submit_ok, needs_more_help = options
     bridge = FakeBridge()
     call = call_fields() | {
         'caller_name': 'Avery Morgan' if name_ok else 'Jordan Smith',
         'caller_phone': '628-268-8753' if phone_ok else '555-555-0100',
         'request_type': request_type, 'wants_representative': wants_rep, 'wants_callback': wants_callback,
+        'submission_decision': decision, 'needs_more_help': needs_more_help,
     }
     client = Mock()
     client.list_policies.side_effect = None if api_up else api_adapter.APIUnavailableError('offline')
@@ -34,6 +41,8 @@ def run_call(monkeypatch, options):
     # api_up is fixed for the call; a rejected save here is a validation error.
     # Mid-call transport loss is tested separately in test_api_outage.
     client.update_claim_draft.side_effect = None if save_ok else api_adapter.ClaimValidationError('invalid', 400)
+    client.submit_claim_draft.side_effect = None if submit_ok else api_adapter.ClaimValidationError('invalid', 400)
+    client.submit_claim_draft.return_value = SimpleNamespace(claim_number='CLM-A1B2C3D4')
     factory = Mock()
     factory.return_value.__enter__ = Mock(return_value=client)
     factory.return_value.__exit__ = Mock(return_value=False)
@@ -90,16 +99,21 @@ def run_call(monkeypatch, options):
                 if request_type == coordinator.REPORT_OWN_LOSS:
                     assert bridge.validators['occurred_at'](call, call['occurred_at']) is True
                     invoke(bridge.completions[claim_intake.TASK_ID])
+                    if save_ok:
+                        invoke(bridge.completions[claim_intake.REVIEW_TASK_ID])
+                        if decision == 'approve' and submit_ok:
+                            invoke(bridge.completions[claim_intake.SUBMITTED_TASK_ID])
         else:
             assert result[0] is False
     assert len(recorded) == len(set(recorded))
-    client.submit_claim_draft.assert_not_called()
+    assert client.submit_claim_draft.call_count <= 1
+    assert not client.submit_claim_draft.called or decision == 'approve'
     return [task.task_id for task in bridge.tasks], state
 
 
 @pytest.mark.parametrize('options', COMBINATIONS)
 def test_every_decision_selects_one_path(monkeypatch, callback_path, options):
-    api_up, found, name_ok, phone_ok, request_type, save_ok, wants_rep, wants_callback = options
+    api_up, found, name_ok, phone_ok, request_type, save_ok, wants_rep, wants_callback, decision, submit_ok, needs_more_help = options
     tasks, state = run_call(monkeypatch, options)
     if not api_up:
         expected = ['assistance-offer']
@@ -117,7 +131,14 @@ def test_every_decision_selects_one_path(monkeypatch, callback_path, options):
             elif request_type == coordinator.OTHER_REQUEST:
                 expected += ['confirm-request', 'unsupported-request']
             else:
-                expected += ['confirm-request', 'collect-claim', 'claim-details-saved' if save_ok else 'claim-save-failed']
+                expected += ['confirm-request', 'collect-claim', 'review-claim' if save_ok else 'claim-save-failed']
+                if save_ok:
+                    if decision == 'decline':
+                        expected += ['claim-not-submitted']
+                    elif not submit_ok:
+                        expected += ['claim-submit-failed']
+                    else:
+                        expected += ['claim-submitted', 'end-call-success' if needs_more_help == 'no' else 'claim-more-help']
     assert tasks == expected
     assert 'collect-claim' not in tasks or (api_up and found and name_ok and phone_ok)
     assert not ('verify-policy' in tasks and 'assistance-offer' in tasks)
@@ -219,3 +240,17 @@ def test_failed_callback_validator_retries_once_without_completion(adapter):
     retry.assert_called_once()
     completed.assert_not_called()
     assert len(call._command_queue) == 2
+
+
+@pytest.mark.parametrize('stage', ['verified', 'outage'])
+def test_intent_b_does_not_replace_active_task(callback_path, stage):
+    bridge = FakeBridge()
+    call = call_fields()
+    coordinator.register(object(), bridge)
+    state = coordinator.state_for(call, bridge)
+    if stage == 'verified':
+        state.verified_profile = PROFILE
+    else:
+        state.record(ActionResult('start_assistance', 'guava', True))
+    assert bridge.actions['intent_b'](call) == coordinator.on_intent_a(call)
+    assert bridge.tasks == bridge.instructions == []

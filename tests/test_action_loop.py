@@ -241,7 +241,7 @@ def test_unverified_claim_has_no_action(api, call):
 
 
 @pytest.mark.parametrize('error,task', [
-    (None, 'claim-details-saved'),
+    (None, 'review-claim'),
     (api_adapter.APIUnavailableError('offline'), None),
     (ValueError('invalid update'), 'claim-save-failed'),
 ])
@@ -269,14 +269,15 @@ def test_claim_save_records_result_before_announcement(api, call, error, task):
         assert saved.target == 'api'
         assert saved.ok is (error is None)
         assert saved.data == ('saved draft' if error is None else error)
-        assert state.result('announce_save') is None
+        assert state.result('start_review' if error is None else 'announce_save') is None
 
     client.update_claim_draft.side_effect = save
     bridge.set_task.side_effect = announce
     on_unavailable.side_effect = announce
     advance(state, lambda current: claim_intake.next_action(call, current, bridge, on_unavailable))
-    assert list(state.results) == ['save_draft', 'announce_save']
-    assert state.result('announce_save').target == 'guava'
+    announcement = 'start_review' if error is None else 'announce_save'
+    assert list(state.results) == ['save_draft', announcement]
+    assert state.result(announcement).target == 'guava'
     if isinstance(error, api_adapter.APIUnavailableError):
         on_unavailable.assert_called_once_with(call)
         bridge.set_task.assert_not_called()
