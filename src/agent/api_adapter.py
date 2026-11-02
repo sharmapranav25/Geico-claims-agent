@@ -17,6 +17,7 @@ Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 
 
 class ReadOnlyModel(BaseModel):
+    # Prevent attribute edits and reject unexpected response fields.
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -131,6 +132,7 @@ class PolicySummary(ReadOnlyModel):
 
 
 class PolicyProfile(ReadOnlyModel):
+    # Tuples keep nested collections immutable as well as the profile itself.
     policy_number: str
     name: str
     phone: str
@@ -202,6 +204,7 @@ class APIAdapter:
         self.close()
 
     def _request(self, method, path, response_type, **kwargs):
+        # Centralize transport errors and response validation for every endpoint.
         try:
             response = self._client.request(method, path, **kwargs)
         except httpx.RequestError as exc:
@@ -233,6 +236,7 @@ class APIAdapter:
         )
 
     def submit_claim_draft(self, policy_number: str) -> SubmittedClaim:
+        # Submission and locking happen on the server; return only its result.
         return self._request(
             "POST", self._policy_path(policy_number) + "/claims/draft/submit", SubmittedClaim,
         )
