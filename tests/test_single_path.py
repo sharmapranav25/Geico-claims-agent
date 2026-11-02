@@ -56,7 +56,7 @@ def run_call(monkeypatch, options):
     def record(result):
         nonlocal command_count
         assert result.target in {'guava', 'api', 'local'}
-        count = len(bridge.tasks) + len(bridge.instructions)
+        count = len(bridge.tasks) + len(bridge.instructions) + len(bridge.infos)
         if result.target in {'api', 'local'}:
             assert count == command_count
         recorded.append(result.name)
@@ -65,21 +65,25 @@ def run_call(monkeypatch, options):
 
     state.record = record
 
-    def invoke(handler):
+    def invoke(handler, added_info=0):
         before = len(bridge.tasks)
+        before_info = len(bridge.infos)
         handler(call)
         assert len(bridge.tasks) == before + 1
+        assert len(bridge.infos) == before_info + added_info
         count = len(recorded)
         handler(call)
         assert len(bridge.tasks) == before + 1
+        assert len(bridge.infos) == before_info + added_info
         assert len(recorded) == count
         assert bridge.instructions == []
         bridge.actions['intent_a'](call)
         assert len(bridge.tasks) == before + 1
+        assert len(bridge.infos) == before_info + added_info
         assert bridge.instructions == []
 
     bridge.actions['intent_a'](call)
-    assert bridge.tasks == bridge.instructions == []
+    assert bridge.tasks == bridge.instructions == bridge.infos == []
     invoke(partial(coordinator.start_call, bridge=bridge))
     if not api_up:
         invoke(bridge.completions[assistance.OFFER_TASK_ID])
@@ -93,7 +97,7 @@ def run_call(monkeypatch, options):
         result = bridge.validators['policy_number'](call, call['policy_number'])
         if policy_found:
             assert result is True
-            invoke(bridge.completions[policy_lookup.TASK_ID])
+            invoke(bridge.completions[policy_lookup.TASK_ID], added_info=int(name_ok and phone_ok))
             if name_ok and phone_ok:
                 invoke(bridge.completions[coordinator.REQUEST_TASK_ID])
                 if request_type == coordinator.REPORT_OWN_LOSS:
@@ -206,7 +210,7 @@ def test_evaluators_are_repeatable_without_actions(monkeypatch, callback_path, e
     first = evaluate(call, state, bridge)
     second = evaluate(call, state, bridge)
     assert (first.name if first else None) == (second.name if second else None)
-    assert bridge.tasks == bridge.instructions == []
+    assert bridge.tasks == bridge.instructions == bridge.infos == []
     factory.assert_not_called()
     write.assert_not_called()
     verified.assert_not_called()
@@ -253,4 +257,4 @@ def test_intent_b_does_not_replace_active_task(callback_path, stage):
     else:
         state.record(ActionResult('start_assistance', 'guava', True))
     assert bridge.actions['intent_b'](call) == coordinator.on_intent_a(call)
-    assert bridge.tasks == bridge.instructions == []
+    assert bridge.tasks == bridge.instructions == bridge.infos == []

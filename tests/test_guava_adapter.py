@@ -31,6 +31,19 @@ def test_bridge_session_id_matches_call(adapter):
     assert adapter.SDK_BRIDGE.get_session_id(call) == call.id
 
 
+def test_bridge_registers_question_handler(adapter):
+    handler = Mock(return_value='Known facts')
+    adapter.SDK_BRIDGE.register_question(adapter.agent, handler)
+    assert adapter.agent._on_question is handler
+
+
+def test_bridge_adds_info(adapter):
+    call = Mock()
+    info = {'policy_number': 'GEC-0001'}
+    adapter.SDK_BRIDGE.add_info(call, 'verified_policy', info)
+    call.add_info.assert_called_once_with('verified_policy', info)
+
+
 def test_session_end_deletes_only_its_state(adapter):
     from agent.call_state import ActionResult
 
@@ -117,8 +130,9 @@ def test_bridge_translates_fields_and_reads_values(adapter):
     call = MockCall()
     adapter.SDK_BRIDGE.set_task(
         call, 'example', 'Collect test values', todos=[('intro', 'Explain the task')],
-        fields=[FieldDefinition('required_name', 'Caller name'),
+        fields=[FieldDefinition('required_name', 'Caller name', question='What is your name?', sensitive=True),
                 FieldDefinition('optional_note', 'Optional note', required=False)],
+        completion_criteria='Complete once recorded',
     )
     command, = call._command_queue
     assert isinstance(command, SetTaskCommand)
@@ -128,6 +142,8 @@ def test_bridge_translates_fields_and_reads_values(adapter):
     assert (required.key, required.description, required.field_type, required.required) == (
         'required_name', 'Caller name', 'text', True,
     )
+    assert required.question == 'What is your name?' and required.sensitive is True
+    assert command.completion_criteria == 'Complete once recorded'
     assert optional.key == 'optional_note' and optional.required is False
     assert call._field_keys_by_task_id['example'] == ['required_name', 'optional_note']
     call.set_field('required_name', 'Alex')
@@ -170,6 +186,7 @@ def test_policy_callbacks_normalize_through_sdk_dispatch(adapter, monkeypatch, n
     client = Mock()
     client.get_policy.return_value = SimpleNamespace(
         policy_number='GEC-0001', name='Avery Morgan', phone='628-268-8753',
+        vehicles=(SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry'),),
     )
     factory = Mock()
     factory.return_value.__enter__ = Mock(return_value=client)

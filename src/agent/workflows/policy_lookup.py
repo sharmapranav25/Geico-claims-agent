@@ -16,9 +16,9 @@ TASK_ID = "verify-policy"
 NAME_MATCH_THRESHOLD = 0.85
 # Required caller-provided inputs; these do not modify the policy profile.
 CHECKLIST = [
-    FieldDefinition(key="policy_number", description="Ask for the policy number for the relevant GEICO policy.", field_type="text", required=True),
+    FieldDefinition(key="policy_number", description="Ask for the policy number for the relevant GEICO policy.", field_type="text", required=True, sensitive=True),
     FieldDefinition(key="caller_name", description="Ask the caller for their own full name, not someone else's name.", field_type="text", required=True),
-    FieldDefinition(key="caller_phone", description="Ask the caller for their own phone number on the policy.", field_type="text", required=True),
+    FieldDefinition(key="caller_phone", description="Ask the caller for their own phone number on the policy.", field_type="digit_sequence", required=True, sensitive=True),
 ]
 
 
@@ -81,6 +81,7 @@ def start(call, bridge: CallBridge):
             "this demo cannot look it up without one. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
         ),
         fields=CHECKLIST,
+        completion_criteria="Complete as soon as the policy number, name and phone are recorded. Do not read them back or re-confirm them.",
     )
 
 

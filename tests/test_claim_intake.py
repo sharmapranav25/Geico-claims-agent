@@ -29,11 +29,13 @@ class FakeBridge:
         self.validators = {}
         self.completions = {}
         self.say = []
+        self.completion_criteria = {}
         self.end_call_success = Mock()
 
-    def set_task(self, call, task_id, objective, todos=(), *, fields=(), say=()):
+    def set_task(self, call, task_id, objective, todos=(), *, fields=(), say=(), completion_criteria=""):
         self.tasks.append((task_id, objective, fields))
         self.say.append(tuple(say))
+        self.completion_criteria[task_id] = completion_criteria
 
     def get_field(self, call, key):
         return call.get(key)
@@ -71,6 +73,50 @@ def test_start_offers_only_this_policys_vehicles():
     assert task_id == claim_intake.TASK_ID
     vehicle = next(field for field in fields if field.key == 'vehicle')
     assert vehicle.choices == ('2021 Toyota Camry', '2022 Honda Civic')
+    assert vehicle.question == 'Which vehicle was involved?'
+
+
+def test_occurred_at_rejects_future_with_fixed_now():
+    from datetime import datetime
+
+    now = datetime.fromisoformat('2026-11-02T12:00:00-08:00')
+    assert claim_intake.validate_occurred_at('2026-11-01T15:00:00-08:00', now=now) is True
+    valid, reason = claim_intake.validate_occurred_at('2026-11-02T15:00:00-08:00', now=now)
+    assert valid is False
+    assert 'has not happened yet' in reason
+
+
+def test_single_vehicle_is_used_without_a_field(api):
+    profile = SimpleNamespace(policy_number=PROFILE.policy_number, vehicles=VEHICLES[:1])
+    bridge = registered(profile)
+    call = {key: value for key, value in FIELDS.items() if key != 'vehicle'}
+    claim_intake.start(call, bridge, profile)
+    _, objective, fields = bridge.tasks[-1]
+    assert 'vehicle' not in {field.key for field in fields}
+    assert 'The vehicle on this policy is 2021 Toyota Camry.' in objective
+    assert 'Do not ask which vehicle' in objective
+    bridge.completions[claim_intake.TASK_ID](call)
+    assert api.update_claim_draft.call_args.args[1].vehicle_id == 'V01-1'
+    assert '2021 Toyota Camry' in bridge.say[-1][0]
+    assert bridge.state.result('start_review').data['vehicle'] == '2021 Toyota Camry'
+
+
+def test_collection_and_review_completion_criteria(api):
+    bridge = registered()
+    call = dict(FIELDS)
+    claim_intake.start(call, bridge, PROFILE)
+    bridge.completions[claim_intake.TASK_ID](call)
+    assert bridge.completion_criteria[claim_intake.TASK_ID] == (
+        'Complete as soon as every field is recorded. Do not ask for extra confirmation; '
+        'the application reads the details back next.'
+    )
+    assert bridge.completion_criteria[claim_intake.REVIEW_TASK_ID] == 'Complete as soon as the decision is recorded.'
+
+
+def test_review_line_strips_trailing_periods_and_spaces():
+    line = claim_intake.review_line(dict(FIELDS, location='Main and 5th... ', description='Rear-ended at a light. . '))
+    assert '..' not in line
+    assert 'Where: Main and 5th. What happened: Rear-ended at a light. Type of loss:' in line
 
 
 def test_complete_saves_draft_with_chosen_vehicle_and_never_submits(api):
@@ -127,7 +173,7 @@ def reviewed_call(api):
 def test_review_speaks_every_field_without_claiming_submission(api):
     bridge, call = reviewed_call(api)
     line, = bridge.say[-1]
-    assert line == claim_intake.review_line(claim_intake.current_claim_fields(call, bridge))
+    assert line == claim_intake.review_line(claim_intake.current_claim_fields(call, bridge, PROFILE))
     for key in claim_intake.CLAIM_FIELDS:
         value = call[key] if key != 'occurred_at' else 'Sunday, November 1 at 3:00 PM'
         assert value in line

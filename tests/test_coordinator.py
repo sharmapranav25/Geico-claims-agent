@@ -53,7 +53,45 @@ def test_intent_a_never_restarts_a_task(adapter):
 
 def profile():
     vehicle = SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry')
-    return SimpleNamespace(policy_number='GEC-0001', vehicles=(vehicle,))
+    return SimpleNamespace(policy_number='GEC-0001', name='Avery Morgan', phone='628-268-8753', vehicles=(vehicle,))
+
+
+@pytest.mark.parametrize('stage,expected', [
+    ('unverified', 'Known facts: the caller is not verified, so no policy or claim information can be shared.'),
+    ('verified', 'Known facts: the claim has not been submitted. The details are still being collected and will be read back for approval first.'),
+    ('submitted', 'Known facts: the claim has been submitted. Its claim number is CLM-A1B2C3D4.'),
+])
+def test_question_answers_only_from_state(adapter, stage, expected):
+    from agent.call_state import ActionResult
+
+    call = MockCall()
+    state = adapter.coordinator.state_for(call, adapter.SDK_BRIDGE)
+    if stage != 'unverified':
+        state.verified_profile = profile()
+    if stage == 'submitted':
+        state.record(ActionResult('submit_claim', 'api', True, SimpleNamespace(claim_number='CLM-A1B2C3D4')))
+    bridge = Mock(wraps=adapter.SDK_BRIDGE)
+    answer = adapter.coordinator.on_question(call, 'Has my claim been filed?', bridge)
+    assert answer == expected + ' Use only these facts. If they do not answer the question, say you do not have that information.'
+    assert [entry[0] for entry in bridge.mock_calls] == ['get_session_id']
+    assert call._command_queue == []
+    assert adapter.agent._on_question(call, 'Has my claim been filed?') == answer
+    assert call._command_queue == []
+    if stage == 'unverified':
+        assert all(value not in answer for value in ('GEC-0001', 'Avery Morgan', '628-268-8753', 'Toyota', 'CLM-'))
+
+
+def test_verified_policy_context_precedes_request_task(adapter):
+    bridge = Mock()
+    call = object()
+    adapter.coordinator.on_verified(call, profile(), bridge)
+    assert [entry[0] for entry in bridge.mock_calls] == ['add_info', 'set_task']
+    bridge.add_info.assert_called_once_with(call, 'verified_policy', {
+        'policy_number': 'GEC-0001', 'policyholder': 'Avery Morgan', 'vehicles': ['2021 Toyota Camry'],
+    })
+    assert '628-268-8753' not in repr(bridge.add_info.call_args)
+    assert bridge.set_task.call_args.args == (call, adapter.coordinator.REQUEST_TASK_ID)
+    assert bridge.set_task.call_args.kwargs['completion_criteria'] == 'Complete as soon as the request type is recorded.'
 
 
 def test_claim_cannot_start_without_verification(adapter):

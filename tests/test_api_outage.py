@@ -47,12 +47,19 @@ class FakeBridge:
     def __init__(self):
         self.tasks = []
         self.instructions = []
+        self.infos = []
         self.validators = {}
         self.completions = {}
         self.actions = {}
 
-    def set_task(self, call, task_id, objective, todos=(), *, fields=(), say=()):
-        self.tasks.append(SimpleNamespace(task_id=task_id, objective=objective, fields=fields, say=say))
+    def set_task(self, call, task_id, objective, todos=(), *, fields=(), say=(), completion_criteria=""):
+        self.tasks.append(SimpleNamespace(task_id=task_id, objective=objective, fields=fields, say=say, completion_criteria=completion_criteria))
+
+    def add_info(self, call, label, info):
+        self.infos.append((label, info))
+
+    def register_question(self, agent, handler):
+        self.question = handler
 
     def send_instruction(self, call, instruction):
         self.instructions.append(instruction)

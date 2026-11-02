@@ -42,6 +42,10 @@ class Scenario:
     claims_added: int | None = None
     claim_number_spoken: bool = False
     expect_hangup: bool = False
+    gated_turns: tuple[tuple[str, str], ...] = ()
+    fallback_turn: str = "Someone rear-ended me yesterday around 3pm at Main and 5th in San Jose. It was a collision."
+    max_asks: tuple[tuple[str, int], ...] = ()
+    must_ask: tuple[str, ...] = ()
 
 
 def identity(number, name, phone='628-268-8753'):
@@ -50,8 +54,9 @@ def identity(number, name, phone='628-268-8753'):
 
 
 SCENARIOS = (
-    Scenario('happy_path', None, (identity('GEC-0010', 'Logan Reed'), CLAIM,
-             'Yes, please submit it.', "No, that's everything."),
+    Scenario('happy_path', None, (identity('GEC-0010', 'Logan Reed'), CLAIM),
+             gated_turns=(("review-claim", "Yes, please submit it."), ("claim-submitted", "No, that's everything.")),
+             max_asks=(("vehicle|camry", 0), ("policy number", 0), ("phone number", 0)),
              required_tasks=('review-claim', 'claim-submitted'),
              required_logs=('Policy completion verified', 'Claim draft saved', 'Claim submitted'),
              claims_added=1, claim_number_spoken=True, expect_hangup=True,
@@ -77,10 +82,19 @@ SCENARIOS = (
              'Actually, I got that wrong. It was at Oak Street, not Main and 5th.'),
              draft_policy='GEC-0011', draft_contains='Oak',
              evaluate_pass=('The agent updates the location and asks the caller to review the revised details again.',), pending_step=4),
-    Scenario('hard_6_permission', 6, (identity('GEC-0012', 'Parker Diaz'), CLAIM, "No, please don't submit anything."),
+    Scenario('hard_6_permission', 6, (identity('GEC-0012', 'Parker Diaz'), CLAIM),
+             gated_turns=(("review-claim", "No, please don't submit anything."),),
              terminal_task='claim-not-submitted', required_tasks=('review-claim',),
              required_logs=('Claim draft saved', 'Claim not submitted'), forbidden_logs=('Claim submitted',),
              claims_added=0, agent_must_contain=('would you like me to submit',)),
+    Scenario('no_repeat_multi_vehicle', None, (identity('GEC-0008', 'Jordan Ellis'), 'It was my 2021 Toyota Camry.'),
+             gated_turns=(("review-claim", "No, please don't submit anything."),),
+             required_tasks=('review-claim',), claims_added=0, max_asks=(("which vehicle|camry|civic", 1),)),
+    Scenario('date_not_assumed', None, (identity('GEC-0009', 'Kai Bennett'),
+             'Someone rear-ended my 2021 Toyota Camry at 3pm at Main and 5th in San Jose. It was a collision.'),
+             fallback_turn='It was yesterday.',
+             gated_turns=(("review-claim", "No, please don't submit anything."),),
+             required_tasks=('review-claim',), claims_added=0, must_ask=('date|what day|which day',)),
     Scenario('hard_7_api_down', 7, ('Yes, please.', "Yes, I'd like to schedule a callback.", 'Next Tuesday at 10 AM. Call me at 628-268-8753.'),
              api_down=True, terminal_task='callback-saved',
              required_tasks=('assistance-offer', 'callback-offer', 'collect-callback'), forbidden_tasks=('verify-policy',),
@@ -149,6 +163,17 @@ def test_golden(scenario, tmp_path):
     transcript = latest.get('transcript', '(no transcript received)')
     tasks = [event['task'] for event in events if event['kind'] == 'task']
     logs = [event['message'] for event in events if event['kind'] == 'log']
+    asked_lines = []
+    for line in transcript.splitlines():
+        if 'here is what i have' in line.casefold():
+            break
+        if line.startswith('[agent]:') and '?' in line:
+            asked_lines.append(line.removeprefix('[agent]:').strip())
+    max_ask_matches = {pattern: [line for line in asked_lines if re.search(pattern, line, re.IGNORECASE)]
+                       for pattern, _ in scenario.max_asks}
+    must_ask_matches = {pattern: [line for line in asked_lines if re.search(pattern, line, re.IGNORECASE)]
+                        for pattern in scenario.must_ask}
+    print(f'max_asks matches={max_ask_matches!r}\nmust_ask matches={must_ask_matches!r}')
     duration = monotonic() - started
     print(f'\n{scenario.id}: duration={duration:.2f}s\ntasks={tasks!r}\nlogs={logs!r}\n{transcript}')
     if errors:
@@ -156,9 +181,14 @@ def test_golden(scenario, tmp_path):
     (tmp_path / 'evidence.json').write_text(json.dumps({
         'scenario': scenario.id, 'duration': duration, 'tasks': tasks, 'logs': logs,
         'transcript': transcript, 'errors': errors, 'timed_out': timed_out, 'events': events,
+        'max_ask_matches': max_ask_matches, 'must_ask_matches': must_ask_matches,
     }, indent=2))
     assert not timed_out, f'Scenario exceeded its {SCENARIO_TIMEOUT}s hard limit'
     assert result.returncode == 0, 'Scenario worker failed; see captured diagnostics'
+    for pattern, limit in scenario.max_asks:
+        assert len(max_ask_matches[pattern]) <= limit, max_ask_matches[pattern]
+    for pattern in scenario.must_ask:
+        assert must_ask_matches[pattern], f'No asked line matched {pattern!r}'
     if scenario.terminal_task is not None:
         assert scenario.terminal_task in tasks
     assert all(task in tasks for task in scenario.required_tasks)
@@ -301,6 +331,18 @@ def run_scenario(scenario):
                 try:
                     session.wait_for_turn()
                     for turn in scenario.turns:
+                        session.say(turn)
+                        snapshot(session)
+                        session.wait_for_turn()
+                    for task_id, turn in scenario.gated_turns:
+                        for _ in range(3):
+                            if task_id in tasks:
+                                break
+                            session.say(scenario.fallback_turn)
+                            snapshot(session)
+                            session.wait_for_turn()
+                        while task_id not in tasks:
+                            session.recv()
                         session.say(turn)
                         snapshot(session)
                         session.wait_for_turn()

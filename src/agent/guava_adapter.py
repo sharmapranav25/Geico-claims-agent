@@ -29,13 +29,13 @@ class SDKBridge(CallBridge):
     """Generic SDK operations used by SDK-free dispatch code."""
 
     @staticmethod
-    def set_task(call, task_id, objective, todos=(), *, fields=(), say=()):
+    def set_task(call, task_id, objective, todos=(), *, fields=(), say=(), completion_criteria=""):
         call.set_task(
-            task_id, objective=objective,
+            task_id, objective=objective, completion_criteria=completion_criteria,
             checklist=[guava.Say(line) for line in say] + [guava.Todo(description, key=key) for key, description in todos] + [
                 guava.Field(key=field.key, description=field.description,
                             field_type=field.field_type, required=field.required,
-                            choices=list(field.choices))
+                            choices=list(field.choices), question=field.question, sensitive=field.sensitive)
                 for field in fields
             ],
         )
@@ -43,6 +43,14 @@ class SDKBridge(CallBridge):
     @staticmethod
     def send_instruction(call, instruction):
         call.send_instruction(instruction)
+
+    @staticmethod
+    def add_info(call, label, info):
+        call.add_info(label, info)
+
+    @staticmethod
+    def register_question(agent, handler):
+        agent.on_question(handler)
 
     @staticmethod
     def end_call_success(call):

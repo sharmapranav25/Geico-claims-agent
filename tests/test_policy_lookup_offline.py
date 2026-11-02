@@ -18,7 +18,7 @@ class FakeBridge:
         self.validators = {}
         self.completions = {}
 
-    def set_task(self, call, task_id, objective, todos=(), *, fields=()):
+    def set_task(self, call, task_id, objective, todos=(), *, fields=(), completion_criteria=""):
         self.tasks.append((call, task_id, objective, fields))
 
     def get_field(self, call, key):
@@ -156,6 +156,19 @@ def test_different_name_does_not_match(name):
 @pytest.mark.parametrize('phone', ['628-268-8753', '6282688753', '+1 628 268 8753', '1-628-268-8753', '(628) 268-8753', '628.268.8753'])
 def test_phone_allows_formatting_only(phone):
     assert policy_lookup.check_identity_match(PROFILE, 'Avery Morgan', phone) is True
+
+
+def test_verification_uses_sensitive_digit_sequence_phone(api):
+    bridge = FakeBridge()
+    verified = register(bridge)
+    call = {'policy_number': 'GEC-0001', 'caller_name': 'Avery Morgan', 'caller_phone': '6282688753'}
+    policy_lookup.start(call, bridge)
+    fields = {field.key: field for field in bridge.tasks[-1][3]}
+    assert fields['caller_phone'].field_type == 'digit_sequence'
+    assert fields['caller_phone'].sensitive is True
+    assert fields['policy_number'].sensitive is True
+    bridge.completions[policy_lookup.TASK_ID](call)
+    verified.assert_called_once_with(call, api.get_policy.return_value)
 
 
 @pytest.mark.parametrize('phone', ['628-268-8763', '628-268-875', '628-268-87533', '2-628-268-8753', ''])

@@ -134,7 +134,7 @@ class FakeBridge:
         self.validators = {}
         self.completions = {}
 
-    def set_task(self, call, task_id, objective, todos=(), *, fields=()):
+    def set_task(self, call, task_id, objective, todos=(), *, fields=(), completion_criteria=""):
         self.tasks.append(task_id)
 
     def get_field(self, call, key):

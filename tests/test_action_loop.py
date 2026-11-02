@@ -25,6 +25,7 @@ class FakeBridge:
     def __init__(self):
         self.set_task = Mock()
         self.send_instruction = Mock()
+        self.add_info = Mock()
         self.validators = {}
         self.completions = {}
 
@@ -89,6 +90,7 @@ def test_policy_evaluation_sends_no_commands_or_api_calls(api, call, stage):
     assert client.mock_calls == []
     bridge.set_task.assert_not_called()
     bridge.send_instruction.assert_not_called()
+    bridge.add_info.assert_not_called()
     verified.assert_not_called()
 
 
@@ -148,6 +150,7 @@ def test_policy_actions_call_only_their_target(api, call):
     profile = fetch.run()
     bridge.set_task.assert_not_called()
     bridge.send_instruction.assert_not_called()
+    bridge.add_info.assert_not_called()
     state.record(ActionResult(fetch.name, fetch.target, True, profile))
     client.reset_mock()
     factory.reset_mock()
@@ -238,6 +241,7 @@ def test_unverified_claim_has_no_action(api, call):
     assert client.mock_calls == []
     bridge.set_task.assert_not_called()
     bridge.send_instruction.assert_not_called()
+    bridge.add_info.assert_not_called()
 
 
 @pytest.mark.parametrize('error,task', [
@@ -260,6 +264,7 @@ def test_claim_save_records_result_before_announcement(api, call, error, task):
     def save(*args):
         bridge.set_task.assert_not_called()
         bridge.send_instruction.assert_not_called()
+        bridge.add_info.assert_not_called()
         if error is not None:
             raise error
         return 'saved draft'

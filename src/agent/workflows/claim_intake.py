@@ -31,30 +31,50 @@ def parse_occurred_at(value):
     return parsed if parsed.tzinfo else parsed.astimezone()
 
 
+def validate_occurred_at(value, now=None):
+    parsed = parse_occurred_at(value)
+    if parsed is None:
+        return False, "Ask the caller again when the loss happened, including the date and approximate time."
+    now = now if now is not None else datetime.now().astimezone()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    if parsed > now:
+        return False, "That time has not happened yet. Ask the caller for the date and time of the loss."
+    return True
+
+
 def start(call, bridge: CallBridge, profile):
     from ..coordinator import CALL_ENDING_RULE, KEEP_CONTEXT_RULE
 
     today = datetime.now().astimezone().date().isoformat()
+    single_vehicle = len(profile.vehicles) == 1
+    vehicle_rule = (f'The vehicle on this policy is {vehicle_label(profile.vehicles[0])}. '
+                    'Do not ask which vehicle; the caller confirms it in the read-back. ') if single_vehicle else ''
     bridge.set_task(call,
         TASK_ID,
         objective=(
             "Fill out the loss report with the verified caller. Record anything "
             "they already described without asking again, and ask only for what "
             "is still missing. Do not decide fault, coverage or payment, and do "
-            "not say a claim was created or submitted. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
+            "not say a claim was created or submitted. Do not ask if there is anything else, close the call, "
+            "or say the report is filed or passed along. " + vehicle_rule + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
         ),
-        fields=[
+        completion_criteria="Complete as soon as every field is recorded. Do not ask for extra confirmation; the application reads the details back next.",
+        fields=([] if single_vehicle else [
             FieldDefinition(
-                key="vehicle", description="Which vehicle on the policy was involved.",
+                key="vehicle", description="Once the caller names a vehicle, record it immediately and do not ask again.",
+                question="Which vehicle was involved?",
                 field_type="multiple_choice",
                 choices=tuple(vehicle_label(vehicle) for vehicle in profile.vehicles),
             ),
+        ]) + [
             FieldDefinition(
                 key="occurred_at",
-                description=f"When the loss happened. Today is {today}. Record it as ISO 8601, like 2026-10-31T15:00:00.",
+                question="What date and time did it happen?",
+                description=f"The date and time the loss happened. Today is {today}. If the caller gives only a time or only a day, ask for the missing part. Never assume a date. Record it as ISO 8601, like 2026-10-31T15:00:00.",
             ),
             FieldDefinition(key="location", description="Where the loss happened."),
-            FieldDefinition(key="description", description="What happened, in the caller's words."),
+            FieldDefinition(key="description", description="Everything the caller said about what happened, combined. Keep earlier details when they add more."),
             FieldDefinition(
                 key="loss_type", description="The kind of loss.",
                 field_type="multiple_choice", choices=LOSS_TYPES,
@@ -63,23 +83,25 @@ def start(call, bridge: CallBridge, profile):
     )
 
 
-def current_claim_fields(call, bridge):
-    return {key: bridge.get_field(call, key) for key in CLAIM_FIELDS}
+def current_claim_fields(call, bridge, profile):
+    return {key: vehicle_label(profile.vehicles[0]) if key == 'vehicle' and len(profile.vehicles) == 1
+            else bridge.get_field(call, key) for key in CLAIM_FIELDS}
 
 
 def review_line(fields):
     date = parse_occurred_at(fields['occurred_at']).strftime('%A, %B %-d at %-I:%M %p')
     return (f"Here is what I have. Vehicle: {fields['vehicle']}. When: {date}. "
-            f"Where: {fields['location']}. What happened: {fields['description']}. "
+            f"Where: {fields['location'].rstrip('. ')}. What happened: {fields['description'].rstrip('. ')}. "
             f"Type of loss: {fields['loss_type']}. Would you like me to submit this claim?")
 
 
-def _start_review(call, bridge):
+def _start_review(call, bridge, profile):
     from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
 
     logger.info('Claim draft saved')
-    fields = current_claim_fields(call, bridge)
+    fields = current_claim_fields(call, bridge, profile)
     bridge.set_task(call, REVIEW_TASK_ID, say=[review_line(fields)],
+        completion_criteria="Complete as soon as the decision is recorded.",
         fields=[FieldDefinition('submission_decision', 'Whether the caller explicitly approved submitting these details.',
                                 field_type='multiple_choice', choices=('approve', 'decline'))],
         objective=("Record approve only if the caller clearly says yes to submitting. Silence, uncertainty or a request "
@@ -110,7 +132,7 @@ def next_action(call, state, bridge, on_unavailable):
     if saved is None:
         def save_draft():
             profile = state.verified_profile
-            chosen = bridge.get_field(call, "vehicle")
+            chosen = current_claim_fields(call, bridge, profile)['vehicle']
             vehicle_id = next((v.vehicle_id for v in profile.vehicles if vehicle_label(v) == chosen), None)
             update = api_adapter.ClaimDraftUpdate(
                 reporting_intent="A", caller_role="policyholder",
@@ -129,7 +151,7 @@ def next_action(call, state, bridge, on_unavailable):
     if state.result('start_review') is not None or state.result('announce_save') is not None:
         return None
     if saved.ok:
-        return Action('start_review', 'guava', lambda: _start_review(call, bridge))
+        return Action('start_review', 'guava', lambda: _start_review(call, bridge, state.verified_profile))
     def announce_save():
         if isinstance(saved.data, (api_adapter.APIUnavailableError, api_adapter.APIResponseError)):
             logger.info('Claim draft save failed')
@@ -147,7 +169,7 @@ def next_submit_action(call, state, bridge, on_unavailable):
         if state.result('announce_not_submitted') is not None:
             return None
         reviewed = state.result('start_review')
-        fields = current_claim_fields(call, bridge)
+        fields = current_claim_fields(call, bridge, state.verified_profile)
         if reviewed is None or bridge.get_field(call, 'submission_decision') != 'approve' or fields != reviewed.data:
             return Action('announce_not_submitted', 'guava', lambda: _announce_not_submitted(call, bridge))
         state.approved_fields = fields
@@ -222,9 +244,7 @@ def next_close_action(call, state, bridge):
 
 def register(agent, bridge: CallBridge, get_state, on_unavailable):
     def on_validate_occurred_at(call, value):
-        if parse_occurred_at(value) is None:
-            return False, "Ask the caller again when the loss happened, including the date and approximate time."
-        return True
+        return validate_occurred_at(value)
 
     def on_claim_complete(call):
         advance(get_state(call), lambda state: next_action(call, state, bridge, on_unavailable))

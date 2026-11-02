@@ -73,8 +73,13 @@ def start_call(call, bridge: CallBridge):
 
 
 def on_verified(call, profile, bridge: CallBridge) -> None:
+    bridge.add_info(call, 'verified_policy', {
+        'policy_number': profile.policy_number, 'policyholder': profile.name,
+        'vehicles': [claim_intake.vehicle_label(vehicle) for vehicle in profile.vehicles],
+    })
     bridge.set_task(call,
         REQUEST_TASK_ID,
+        completion_criteria="Complete as soon as the request type is recorded.",
         objective=(
             f"Identity is verified for policy {profile.policy_number} in this mock "
             "demo; tell the caller. Then record what they are calling about. If "
@@ -149,6 +154,19 @@ def on_immediate_danger_or_other(call, bridge: CallBridge) -> None:
     )
 
 
+def on_question(call, question, bridge) -> str:
+    state = state_for(call, bridge)
+    submitted = state.result('submit_claim')
+    if submitted is not None and submitted.ok:
+        answer = f'Known facts: the claim has been submitted. Its claim number is {submitted.data.claim_number}.'
+    elif state.verified_profile is not None:
+        answer = ('Known facts: the claim has not been submitted. The details are still being collected and '
+                  'will be read back for approval first.')
+    else:
+        answer = 'Known facts: the caller is not verified, so no policy or claim information can be shared.'
+    return answer + ' Use only these facts. If they do not answer the question, say you do not have that information.'
+
+
 def register(agent, bridge: CallBridge):
     # Connect each route once; workflows own their validation and API access.
     bridge.register_actions(agent, INTENT_CHOICES, {
@@ -157,6 +175,7 @@ def register(agent, bridge: CallBridge):
         "immediate_danger_or_other": partial(on_immediate_danger_or_other, bridge=bridge),
     })
     get_state = partial(state_for, bridge=bridge)
+    bridge.register_question(agent, partial(on_question, bridge=bridge))
     on_unavailable = partial(assistance.start, bridge=bridge)
     policy_lookup.register(agent, bridge, get_state, partial(on_verified, bridge=bridge), on_unavailable)
     bridge.register_task_complete(agent, REQUEST_TASK_ID, partial(on_request_confirmed, bridge=bridge))
@@ -165,6 +184,6 @@ def register(agent, bridge: CallBridge):
 
 
 # Deferred: real Intent B and assistance workflows, on_escalate (no handoff),
-# on_question (no knowledge source), and searchable fields/on_search_query.
+# searchable fields/on_search_query.
 # Future API-backed work belongs in workflow files, not in this coordinator.
 # Hangup triggers still await deterministic caller-completion confirmation.
