@@ -10,6 +10,7 @@ from guava.testing import MockCall
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, coordinator
+from agent.call_state import CallState
 from agent.workflows import policy_lookup
 
 try:
@@ -43,7 +44,8 @@ def test_registered_completion_branches_and_fields():
         from agent.guava_adapter import SDKBridge
         agent = guava.Agent(name='Test')
     bridge = SDKBridge()
-    policy_lookup.register(agent, bridge, lambda call, profile: coordinator.on_verified(call, profile, bridge))
+    policy_lookup.register(agent, bridge, lambda call: CallState(call.id),
+                           lambda call, profile: coordinator.on_verified(call, profile, bridge))
     assert set(agent._on_validate_handlers) == {'policy_number'}
     assert set(agent._on_task_complete_handlers) == {policy_lookup.TASK_ID}
     commands = []

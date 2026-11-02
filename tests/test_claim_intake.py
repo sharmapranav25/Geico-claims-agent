@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter
+from agent.call_state import CallState
 from agent.workflows import claim_intake
 
 VEHICLES = (
@@ -53,7 +54,8 @@ def api(monkeypatch):
 
 def registered(profile=PROFILE):
     bridge = FakeBridge()
-    claim_intake.register(object(), bridge, lambda call: profile)
+    state = CallState('test-session', verified_profile=profile)
+    claim_intake.register(object(), bridge, lambda call: state)
     return bridge
 
 

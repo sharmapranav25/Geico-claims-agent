@@ -49,6 +49,10 @@ class SDKBridge(CallBridge):
         return call.get_field(key)
 
     @staticmethod
+    def get_session_id(call):
+        return call.id
+
+    @staticmethod
     def register_validator(agent, key, handler):
         agent.on_validate(key)(handler)
 
@@ -101,6 +105,10 @@ def on_call_start(call: guava.Call) -> None:
     logger.info("Call started")
 
 
+def on_session_end(call: guava.Call, event) -> None:
+    coordinator.end_call(call, SDK_BRIDGE)
+
+
 def on_caller_speech(call: guava.Call, event: CallerSpeechEvent) -> None:
     logger.info("Caller utterance: %s", event.utterance)
 
@@ -124,6 +132,7 @@ def build_agent(
     # Attach lifecycle callbacks once for each configured agent.
     agent.on_call_received(on_call_received)
     agent.on_call_start(on_call_start)
+    agent.on_session_end(on_session_end)
     agent.on_caller_speech(on_caller_speech)
     agent.on_agent_speech(on_agent_speech)
 

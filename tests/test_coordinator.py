@@ -11,11 +11,13 @@ from guava.testing import MockCall
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
     spec = importlib.util.spec_from_file_location('routing_adapter_test', Path(__file__).resolve().parents[1] / 'src/agent/guava_adapter.py')
     module = importlib.util.module_from_spec(spec)
     with patch('dotenv.load_dotenv'), patch('guava.agent.Client'):
         spec.loader.exec_module(module)
+    from agent.call_state import InMemoryStateStore
+    monkeypatch.setattr(module.coordinator, 'STORE', InMemoryStateStore())
     return module
 
 
@@ -63,6 +65,7 @@ def test_claim_cannot_start_without_verification(adapter):
 @pytest.mark.parametrize('request_type,task', [('report_own_loss', 'collect-claim'), ('other_request', 'unsupported-request')])
 def test_verified_caller_routes_on_recorded_request(adapter, request_type, task):
     call = MockCall()
+    adapter.coordinator.state_for(call, adapter.SDK_BRIDGE).verified_profile = profile()
     adapter.coordinator.on_verified(call, profile(), adapter.SDK_BRIDGE)
     assert call._command_queue[-1].task_id == adapter.coordinator.REQUEST_TASK_ID
     call.set_field('request_type', request_type)

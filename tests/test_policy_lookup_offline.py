@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, coordinator
+from agent.call_state import CallState
 from agent.workflows import policy_lookup
 
 
@@ -34,7 +35,8 @@ def register(bridge):
     def on_verified(call, profile):
         bridge.set_task(call, 'verified', coordinator.CALL_ENDING_RULE)
 
-    policy_lookup.register(object(), bridge, on_verified)
+    state = CallState('test-session')
+    policy_lookup.register(object(), bridge, lambda call: state, on_verified)
 
 
 @pytest.fixture

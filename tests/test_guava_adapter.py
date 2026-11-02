@@ -21,7 +21,29 @@ def adapter(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     with patch("dotenv.load_dotenv"), patch("guava.agent.Client"):
         spec.loader.exec_module(module)
+    from agent.call_state import InMemoryStateStore
+    monkeypatch.setattr(module.coordinator, 'STORE', InMemoryStateStore())
     return module
+
+
+def test_bridge_session_id_matches_call(adapter):
+    call = MockCall()
+    assert adapter.SDK_BRIDGE.get_session_id(call) == call.id
+
+
+def test_session_end_deletes_only_its_state(adapter):
+    from agent.call_state import ActionResult
+
+    call = MockCall()
+    state = adapter.coordinator.state_for(call, adapter.SDK_BRIDGE)
+    state.record(ActionResult('start_verification', 'guava', True))
+    other = adapter.coordinator.STORE.get('other-session')
+    assert adapter.agent._on_session_end is adapter.on_session_end
+    adapter.agent._on_session_end(call, object())
+    fresh = adapter.coordinator.state_for(call, adapter.SDK_BRIDGE)
+    assert fresh is not state
+    assert fresh.results == {}
+    assert adapter.coordinator.STORE.get('other-session') is other
 
 
 def test_on_call_received_accepts_call(adapter):
