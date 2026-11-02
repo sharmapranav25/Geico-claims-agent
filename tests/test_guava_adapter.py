@@ -34,7 +34,7 @@ def test_on_call_received_accepts_call(adapter):
 
 def test_on_call_start_delegates_to_coordinator(adapter, monkeypatch):
     start = Mock()
-    monkeypatch.setattr(adapter.coordinator, "start_routing", start)
+    monkeypatch.setattr(adapter.coordinator, "start_call", start)
     call = MockCall()
     adapter.on_call_start(call)
     start.assert_called_once_with(call, adapter.SDK_BRIDGE)
@@ -131,3 +131,65 @@ def test_bridge_registers_validation_and_completion(adapter):
     validator.return_value = True
     adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id='test-task'))
     completed.assert_called_once_with(call)
+
+
+@pytest.mark.parametrize('number', ['GEC0001', 'GEC 0001', 'gec-0001', 'G-E-C-0001', 'GEC-0001'])
+@pytest.mark.parametrize('name,task', [
+    ('Avery Morgan', 'confirm-request'),
+    ('Jordan Smith', 'policy-verification-mismatch'),
+])
+def test_policy_callbacks_normalize_through_sdk_dispatch(adapter, monkeypatch, number, name, task):
+    from types import SimpleNamespace
+
+    from guava.events import TaskCompletedEvent
+    from agent import api_adapter
+    from agent.workflows import policy_lookup
+
+    client = Mock()
+    client.get_policy.return_value = SimpleNamespace(
+        policy_number='GEC-0001', name='Avery Morgan', phone='628-268-8753',
+    )
+    factory = Mock()
+    factory.return_value.__enter__ = Mock(return_value=client)
+    factory.return_value.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
+    call = MockCall()
+    policy_lookup.start(call, adapter.SDK_BRIDGE)
+    call.set_field('policy_number', number)
+    call.set_field('caller_name', name)
+    call.set_field('caller_phone', '628-268-8753')
+
+    adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id=policy_lookup.TASK_ID))
+
+    assert client.get_policy.call_count == 2
+    assert all(args.args == ('GEC-0001',) for args in client.get_policy.call_args_list)
+    assert call._command_queue[-1].task_id == task
+
+
+def test_policy_validation_failure_retries_without_completion(adapter, monkeypatch, caplog):
+    from guava.events import TaskCompletedEvent
+    from agent import api_adapter
+    from agent.workflows import policy_lookup
+
+    client = Mock()
+    client.get_policy.side_effect = api_adapter.PolicyNotFoundError('missing', 404)
+    factory = Mock()
+    factory.return_value.__enter__ = Mock(return_value=client)
+    factory.return_value.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
+    completed = Mock(wraps=adapter.agent._on_task_complete_handlers[policy_lookup.TASK_ID])
+    adapter.agent._on_task_complete_handlers[policy_lookup.TASK_ID] = completed
+    call = MockCall()
+    policy_lookup.start(call, adapter.SDK_BRIDGE)
+    call.set_field('policy_number', 'GEC-9999')
+    call.set_field('caller_name', 'Jordan Smith')
+    call.set_field('caller_phone', '555-555-0100')
+    with patch.object(call, 'retry_task', wraps=call.retry_task) as retry:
+        with caplog.at_level('INFO', logger=policy_lookup.__name__):
+            adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id=policy_lookup.TASK_ID))
+    retry.assert_called_once()
+    assert 'not found' in retry.call_args.kwargs['reason']
+    completed.assert_not_called()
+    client.get_policy.assert_called_once_with('GEC-9999')
+    assert len(call._command_queue) == 2
+    assert 'Policy validation not found' in caplog.messages

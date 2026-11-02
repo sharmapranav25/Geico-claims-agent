@@ -1,6 +1,7 @@
 """Offline routing/dispatch tests using the adapter's SDK bridge."""
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -18,14 +19,17 @@ def adapter():
     return module
 
 
-def test_start_routing(adapter):
+def test_call_starts_in_verification(adapter):
+    from agent.workflows import policy_lookup
+
     call = MockCall()
-    adapter.coordinator.start_routing(call, adapter.SDK_BRIDGE)
+    adapter.coordinator.start_call(call, adapter.SDK_BRIDGE)
     command, = call._command_queue
     assert isinstance(command, SetTaskCommand)
-    assert command.task_id == adapter.coordinator.INTEGRATION_TASK_ID
-    assert command.objective == adapter.coordinator.INTEGRATION_OBJECTIVE
-    assert command.action_items[0].key == 'clarify-request'
+    assert command.task_id == policy_lookup.TASK_ID
+    assert {item.key for item in command.action_items} == {'policy_number', 'caller_name', 'caller_phone'}
+    assert adapter.coordinator.KEEP_CONTEXT_RULE in command.objective
+    assert adapter.coordinator.CALL_ENDING_RULE in command.objective
 
 
 @pytest.mark.parametrize('result', [None, [SuggestedAction(key='intent_a')], [SuggestedAction(key='intent_a'), SuggestedAction(key='intent_b')]])
@@ -36,14 +40,34 @@ def test_classification_passes_through(adapter, monkeypatch, result):
     classify.assert_called_once_with('report damage')
 
 
-def test_intent_a_dispatches_to_workflow(adapter, monkeypatch):
-    start = Mock()
-    monkeypatch.setattr(adapter.coordinator.policy_lookup, 'start', start)
-    with patch('guava.agent.Client'):
-        agent = adapter.build_agent()
+def test_intent_a_never_restarts_a_task(adapter):
+    # Repeating set_task mid-collection discarded progress and stalled live calls.
     call = MockCall()
-    agent._on_action_handlers['intent_a'](call)
-    start.assert_called_once_with(call, bridge=adapter.SDK_BRIDGE)
+    response = adapter.agent._on_action_handlers['intent_a'](call)
+    assert call._command_queue == []
+    assert 'without restarting' in response
+
+
+def profile():
+    vehicle = SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry')
+    return SimpleNamespace(policy_number='GEC-0001', vehicles=(vehicle,))
+
+
+def test_claim_cannot_start_without_verification(adapter):
+    call = MockCall()
+    call.set_field('request_type', adapter.coordinator.REPORT_OWN_LOSS)
+    adapter.coordinator.on_request_confirmed(call, adapter.SDK_BRIDGE)
+    assert call._command_queue == []
+
+
+@pytest.mark.parametrize('request_type,task', [('report_own_loss', 'collect-claim'), ('other_request', 'unsupported-request')])
+def test_verified_caller_routes_on_recorded_request(adapter, request_type, task):
+    call = MockCall()
+    adapter.coordinator.on_verified(call, profile(), adapter.SDK_BRIDGE)
+    assert call._command_queue[-1].task_id == adapter.coordinator.REQUEST_TASK_ID
+    call.set_field('request_type', request_type)
+    adapter.coordinator.on_request_confirmed(call, adapter.SDK_BRIDGE)
+    assert call._command_queue[-1].task_id == task
 
 
 def test_placeholder_content_unchanged(adapter):

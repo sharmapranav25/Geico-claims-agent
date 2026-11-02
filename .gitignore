@@ -1,6 +1,9 @@
 .DS_Store
 reference-docs/
 codex-harness.md
+CLAUDE.local.md
+pvt-notes/
+.claude/skills/
 
 # Python / uv
 .venv/

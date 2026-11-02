@@ -1,13 +1,16 @@
-"""Routing wording and dispatch; no SDK or API calls."""
+"""Call flow and deterministic gates: verify, confirm the request, fill the claim."""
 
 from functools import partial
+from weakref import WeakKeyDictionary
 
-from .bridge import CallBridge
-from .workflows import policy_lookup
+from .bridge import CallBridge, FieldDefinition
+from .workflows import claim_intake, policy_lookup
 
-DEFAULT_PURPOSE = "Identify the caller's auto loss reporting request and route it appropriately."
-INTEGRATION_TASK_ID = "request-routing"
-# Shared guardrail appended to routing and workflow objectives.
+DEFAULT_PURPOSE = "Verify the caller's GEICO policy, then help them report an auto loss."
+REQUEST_TASK_ID = "confirm-request"
+REPORT_OWN_LOSS = "report_own_loss"
+OTHER_REQUEST = "other_request"
+# Shared guardrail appended to workflow objectives.
 CALL_ENDING_RULE = (
     "Never end or offer to end the call unless the caller has explicitly "
     "confirmed there is nothing else they need. Do not treat silence or your "
@@ -17,12 +20,19 @@ CALL_ENDING_RULE = (
     "or end_call_unresolved otherwise. These helpers are not wired into this "
     "placeholder task yet; do not independently hang up."
 )
+# Keeps every later instruction from re-asking what the caller already gave.
+KEEP_CONTEXT_RULE = (
+    "Use everything the caller has already said in this call. Never re-ask for "
+    "or re-confirm something they already gave unless it was unclear or the "
+    "application rejected it. Never say you are looking something up or ask the "
+    "caller to wait; record what you have so the application can check it. "
+)
 # Descriptions help the classifier distinguish whose loss is being reported.
 INTENT_CHOICES = {
     "intent_a": (
         "A loss reported under the policy covering the person or vehicle concerned. "
         "The caller may be the policyholder or reporting on their behalf. Another "
-        "driver's involvement does not by itself make this Intent B."
+        "driver's involvement does not by itself make this Intent A or B."
     ),
     "intent_b": (
         "Damage allegedly caused by a GEICO-insured person or vehicle, reported by "
@@ -35,31 +45,53 @@ INTENT_CHOICES = {
         "or existing-claim servicing. Immediate danger takes priority."
     ),
 }
-INTEGRATION_OBJECTIVE = (
-    "Greet the caller and identify their request and any immediate safety needs. "
-    "Your first job is routing: immediate danger or another service; Intent A, "
-    "a loss under the policy covering the person or vehicle concerned; or Intent B, "
-    "damage allegedly caused by a GEICO-insured party. Establish whose loss is "
-    "being reported and which policy or insured party it concerns. Do not infer "
-    "the branch solely from 'with', 'against', or the caller having GEICO insurance. "
-    "Use the available actions once the intended report is clear. If no action "
-    "matches or the request is ambiguous, ask a short clarifying question, such as "
-    "whose loss they are reporting and which policy or insured party it concerns. "
-    "Do not guess a branch. Recognizing a branch does not authorize claims intake. "
-    "The real workflows are not implemented yet; do not collect claim details "
-    "or claim to look up, save, submit, transfer, or send anything. "
-    + CALL_ENDING_RULE
-)
+
+# Verified policy per active call; nothing past verification runs without it.
+_verified_profiles = WeakKeyDictionary()
 
 
+def start_call(call, bridge: CallBridge):
+    policy_lookup.start(call, bridge)
 
-def start_routing(call, bridge: CallBridge):
-    # Begin request clarification without depending on SDK types.
-    bridge.set_task(
-        call, INTEGRATION_TASK_ID, objective=INTEGRATION_OBJECTIVE,
-        todos=[("clarify-request", "Clarify the intended request and choose the appropriate routing action; "
-                "prioritize immediate danger and ask for clarification when unclear.")],
+
+def on_verified(call, profile, bridge: CallBridge) -> None:
+    _verified_profiles[call] = profile
+    bridge.set_task(call,
+        REQUEST_TASK_ID,
+        objective=(
+            f"Identity is verified for policy {profile.policy_number} in this mock "
+            "demo; tell the caller. Then record what they are calling about. If "
+            "they already said, record it without asking. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
+        ),
+        fields=[FieldDefinition(
+            key="request_type",
+            description="Whether the caller is reporting a loss on their own policy, or something else.",
+            field_type="multiple_choice",
+            choices=(REPORT_OWN_LOSS, OTHER_REQUEST),
+        )],
     )
+
+
+def on_request_confirmed(call, bridge: CallBridge) -> None:
+    profile = _verified_profiles.get(call)
+    if profile is None:
+        return
+    if bridge.get_field(call, "request_type") == REPORT_OWN_LOSS:
+        claim_intake.start(call, bridge, profile)
+        return
+    bridge.set_task(call,
+        "unsupported-request",
+        objective=(
+            "This demo only opens new loss reports for verified policyholders. "
+            "Explain that limit, and guide them to the appropriate service without "
+            "inventing contact details or claiming to transfer them. " + CALL_ENDING_RULE
+        ),
+    )
+
+
+def on_intent_a(call) -> str:
+    # Never restart a task here: repeating set_task discards its collected progress.
+    return "Noted. Continue your current task without restarting it or re-asking for anything already given."
 
 
 def on_intent_b(call, bridge: CallBridge) -> None:
@@ -75,6 +107,7 @@ def on_intent_b(call, bridge: CallBridge) -> None:
         ),
     )
 
+
 def on_immediate_danger_or_other(call, bridge: CallBridge) -> None:
     bridge.send_instruction(call,
         "Immediate danger or other service selected. Acknowledge the caller's "
@@ -87,15 +120,16 @@ def on_immediate_danger_or_other(call, bridge: CallBridge) -> None:
     )
 
 
-
 def register(agent, bridge: CallBridge):
     # Connect each route once; workflows own their validation and API access.
     bridge.register_actions(agent, INTENT_CHOICES, {
-        "intent_a": partial(policy_lookup.start, bridge=bridge),
+        "intent_a": on_intent_a,
         "intent_b": partial(on_intent_b, bridge=bridge),
         "immediate_danger_or_other": partial(on_immediate_danger_or_other, bridge=bridge),
     })
-    policy_lookup.register(agent, bridge)
+    policy_lookup.register(agent, bridge, partial(on_verified, bridge=bridge))
+    bridge.register_task_complete(agent, REQUEST_TASK_ID, partial(on_request_confirmed, bridge=bridge))
+    claim_intake.register(agent, bridge, _verified_profiles.get)
 
 
 # Deferred: real Intent B and assistance workflows, on_escalate (no handoff),

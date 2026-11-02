@@ -1,12 +1,18 @@
-"""Intent A policy lookup and mock policyholder identity verification."""
+"""Deterministic mock policyholder verification, the first step of every call."""
 
+import logging
 import re
+from difflib import SequenceMatcher
 from typing import Literal
 
 from .. import api_adapter
 from ..bridge import CallBridge, FieldDefinition
 
-TASK_ID = "verify-policy-intent-a"
+logger = logging.getLogger(__name__)
+
+TASK_ID = "verify-policy"
+# Tolerates a transcription slip in a name, not a different name.
+NAME_MATCH_THRESHOLD = 0.85
 # Required caller-provided inputs; these do not modify the policy profile.
 CHECKLIST = [
     FieldDefinition(key="policy_number", description="Ask for the policy number for the relevant GEICO policy.", field_type="text", required=True),
@@ -15,52 +21,68 @@ CHECKLIST = [
 ]
 
 
+def normalize_policy_number(value: str) -> str:
+    compact = ''.join(character for character in value if character.isalnum()).upper()
+    if re.fullmatch(r'GEC[0-9]{4}', compact):
+        return 'GEC-' + compact[3:]
+    return value.strip()
+
+
 def validate_policy_number(policy_number: str) -> Literal[True] | tuple[Literal[False], str]:
     # Return validation feedback; the SDK handles retrying the task.
     if not isinstance(policy_number, str) or not policy_number.strip():
         return False, "Please ask the caller for their policy number."
     try:
         with api_adapter.APIAdapter() as api:
-            api.get_policy(policy_number.strip())
+            api.get_policy(normalize_policy_number(policy_number))
     except api_adapter.PolicyNotFoundError:
+        logger.info('Policy validation not found')
         return False, "That policy number was not found. Please ask the caller to check and repeat it."
     except api_adapter.APIError:
+        logger.info('Policy validation unavailable')
         return False, "The policy service could not confirm the number right now. Explain the service issue; do not say the policy is invalid."
+    logger.info('Policy validation passed')
     return True
 
 
 def check_identity_match(profile, caller_name: str, caller_phone: str) -> bool:
-    # Require BOTH: all seeded policies share a phone number. Case/spacing and
-    # phone punctuation (plus an optional US country code) are not identity differences.
+    # Require BOTH: all seeded policies share a phone number. Names allow case,
+    # punctuation, word order and small spelling differences; phone digits must
+    # match exactly, apart from punctuation and an optional US country code.
     def name(value):
-        return " ".join(value.casefold().split()) if isinstance(value, str) else ""
+        words = re.sub(r"[^\w\s]", "", value.casefold()).split() if isinstance(value, str) else []
+        return " ".join(sorted(words))
 
     def phone(value):
         digits = re.sub(r"\D", "", value) if isinstance(value, str) else ""
         return digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
 
     stated_name, stated_phone = name(caller_name), phone(caller_phone)
-    return bool(stated_name and stated_phone and stated_name == name(profile.name) and stated_phone == phone(profile.phone))
+    if not (stated_name and stated_phone) or stated_phone != phone(profile.phone):
+        return False
+    return SequenceMatcher(None, stated_name, name(profile.name)).ratio() >= NAME_MATCH_THRESHOLD
 
 
 def start(call, bridge: CallBridge):
-    from ..coordinator import CALL_ENDING_RULE
+    from ..coordinator import CALL_ENDING_RULE, KEEP_CONTEXT_RULE
 
     bridge.set_task(call,
         TASK_ID,
         objective=(
-            "For Intent A, locate the relevant policy and check the caller's own "
-            "name and phone against it. This demo supports the policyholder only; "
-            "being a representative does not establish authority. Ask naturally "
-            "for the three verification fields. Do not disclose profile details "
-            "or claim verification succeeded before the application confirms it. "
-            "Do not create a claim or collect loss facts yet. " + CALL_ENDING_RULE
+            "Greet the caller and collect their policy number, full name and the "
+            "phone number on the policy. They may give these before you ask or all "
+            "at once: record each one as soon as you hear it. This demo supports "
+            "the policyholder only; being a representative does not establish "
+            "authority. Do not disclose profile details or claim verification "
+            "succeeded before the application confirms it. Do not collect loss "
+            "facts yet. If the caller does not have their policy number, explain "
+            "this demo cannot look it up without one. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
         ),
         fields=CHECKLIST,
     )
 
 
-def register(agent, bridge: CallBridge):
+def register(agent, bridge: CallBridge, on_verified):
     # Register at agent setup, not every time a caller enters the workflow.
     def on_validate_policy_number(call, value):
         return validate_policy_number(value)
@@ -72,8 +94,9 @@ def register(agent, bridge: CallBridge):
         number = bridge.get_field(call, "policy_number")
         try:
             with api_adapter.APIAdapter() as api:
-                profile = api.get_policy(number.strip() if isinstance(number, str) else "")
+                profile = api.get_policy(normalize_policy_number(number) if isinstance(number, str) else "")
         except api_adapter.APIError:
+            logger.info('Policy completion unavailable')
             bridge.set_task(call,
                 "policy-verification-unavailable",
                 objective=(
@@ -85,16 +108,10 @@ def register(agent, bridge: CallBridge):
             )
             return
         if check_identity_match(profile, bridge.get_field(call, "caller_name"), bridge.get_field(call, "caller_phone")):
-            bridge.set_task(call,
-                "policy-verified-placeholder",
-                objective=(
-                    f"Identity is verified for policy {profile.policy_number} in this mock demo. "
-                    "Acknowledge successful verification. The real claim-start and "
-                    "information-collection workflow is not implemented yet. Do not "
-                    "invent claim actions or claim to create, save, or submit a claim. " + CALL_ENDING_RULE
-                ),
-            )
+            logger.info('Policy completion verified')
+            on_verified(call, profile)
         else:
+            logger.info('Policy completion mismatch')
             bridge.set_task(call,
                 "policy-verification-mismatch",
                 objective=(
