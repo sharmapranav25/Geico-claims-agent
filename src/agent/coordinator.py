@@ -5,7 +5,7 @@ from functools import partial
 from .action_loop import Action, advance
 from .bridge import CallBridge, FieldDefinition
 from .call_state import InMemoryStateStore
-from .workflows import claim_intake, policy_lookup
+from .workflows import assistance, claim_intake, policy_lookup
 
 DEFAULT_PURPOSE = "Verify the caller's GEICO policy, then help them report an auto loss."
 REQUEST_TASK_ID = "confirm-request"
@@ -59,9 +59,14 @@ def end_call(call, bridge):
 
 
 def next_start_action(call, state, bridge):
-    if state.result('start_verification') is not None:
+    check = state.result('check_api')
+    if check is None:
+        return assistance.check_api_action()
+    if state.result('start_verification') is not None or state.result('start_assistance') is not None:
         return None
-    return Action('start_verification', 'guava', lambda: policy_lookup.start(call, bridge))
+    if check.ok:
+        return Action('start_verification', 'guava', lambda: policy_lookup.start(call, bridge))
+    return Action('start_assistance', 'guava', lambda: assistance.start(call, bridge))
 
 
 def start_call(call, bridge: CallBridge):
@@ -150,9 +155,11 @@ def register(agent, bridge: CallBridge):
         "immediate_danger_or_other": partial(on_immediate_danger_or_other, bridge=bridge),
     })
     get_state = partial(state_for, bridge=bridge)
-    policy_lookup.register(agent, bridge, get_state, partial(on_verified, bridge=bridge))
+    on_unavailable = partial(assistance.start, bridge=bridge)
+    policy_lookup.register(agent, bridge, get_state, partial(on_verified, bridge=bridge), on_unavailable)
     bridge.register_task_complete(agent, REQUEST_TASK_ID, partial(on_request_confirmed, bridge=bridge))
-    claim_intake.register(agent, bridge, get_state)
+    claim_intake.register(agent, bridge, get_state, on_unavailable)
+    assistance.register(agent, bridge, get_state)
 
 
 # Deferred: real Intent B and assistance workflows, on_escalate (no handoff),

@@ -10,3 +10,4 @@ pvt-notes/
 __pycache__/
 *.pyc
 .env
+data/

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, coordinator
 from agent.action_loop import Action, MAX_ACTIONS, advance
 from agent.call_state import ActionResult, CallState, InMemoryStateStore
-from agent.workflows import claim_intake, policy_lookup
+from agent.workflows import assistance, claim_intake, policy_lookup
 
 PROFILE = SimpleNamespace(
     policy_number='GEC-0001', name='Avery Morgan', phone='628-268-8753',
@@ -76,7 +76,7 @@ def test_policy_evaluation_sends_no_commands_or_api_calls(api, call, stage):
     if stage == 'announced':
         state.record(ActionResult('announce_verification', 'guava', True))
 
-    action = policy_lookup.next_action(call, state, bridge, verified)
+    action = policy_lookup.next_action(call, state, bridge, verified, Mock())
 
     if stage == 'announced':
         assert action is None
@@ -103,7 +103,7 @@ def test_verified_path_records_fetch_before_announcement(api, call, caplog):
 
     bridge.set_task.side_effect = announce
     evaluate = Mock(side_effect=lambda current: policy_lookup.next_action(
-        call, current, bridge, partial(coordinator.on_verified, bridge=bridge),
+        call, current, bridge, partial(coordinator.on_verified, bridge=bridge), Mock(),
     ))
     with caplog.at_level('INFO', logger='agent.action_loop'):
         advance(state, evaluate)
@@ -143,7 +143,7 @@ def test_policy_actions_call_only_their_target(api, call):
     bridge = FakeBridge()
     state = CallState(call['session_id'])
     verified = partial(coordinator.on_verified, bridge=bridge)
-    fetch = policy_lookup.next_action(call, state, bridge, verified)
+    fetch = policy_lookup.next_action(call, state, bridge, verified, Mock())
     assert fetch.target == 'api'
     profile = fetch.run()
     bridge.set_task.assert_not_called()
@@ -152,7 +152,7 @@ def test_policy_actions_call_only_their_target(api, call):
     client.reset_mock()
     factory.reset_mock()
 
-    announce = policy_lookup.next_action(call, state, bridge, verified)
+    announce = policy_lookup.next_action(call, state, bridge, verified, Mock())
     assert announce.target == 'guava'
     announce.run()
     bridge.set_task.assert_called_once()
@@ -171,11 +171,12 @@ def test_failed_fetch_records_exception_then_announces(api, call, caplog):
         assert state.result('fetch_policy').ok is False
         assert state.result('fetch_policy').data is error
 
-    bridge.set_task.side_effect = announce
+    on_unavailable = Mock(side_effect=announce)
     with caplog.at_level('INFO', logger='agent.action_loop'):
-        advance(state, lambda current: policy_lookup.next_action(call, current, bridge, Mock()))
+        advance(state, lambda current: policy_lookup.next_action(call, current, bridge, Mock(), on_unavailable))
     assert list(state.results) == ['fetch_policy', 'announce_verification']
-    assert bridge.set_task.call_args.args[1] == 'policy-verification-unavailable'
+    on_unavailable.assert_called_once_with(call)
+    bridge.set_task.assert_not_called()
     assert state.verified_profile is None
     assert 'private transport detail' not in caplog.text
     assert 'Action fetch_policy target=api ok=False' in caplog.messages
@@ -232,7 +233,7 @@ def test_store_isolates_sessions_and_deletes_state():
 def test_unverified_claim_has_no_action(api, call):
     client, factory = api
     bridge = FakeBridge()
-    assert claim_intake.next_action(call, CallState('session'), bridge) is None
+    assert claim_intake.next_action(call, CallState('session'), bridge, Mock()) is None
     factory.assert_not_called()
     assert client.mock_calls == []
     bridge.set_task.assert_not_called()
@@ -241,7 +242,7 @@ def test_unverified_claim_has_no_action(api, call):
 
 @pytest.mark.parametrize('error,task', [
     (None, 'claim-details-saved'),
-    (api_adapter.APIUnavailableError('offline'), 'claim-save-failed'),
+    (api_adapter.APIUnavailableError('offline'), None),
     (ValueError('invalid update'), 'claim-save-failed'),
 ])
 def test_claim_save_records_result_before_announcement(api, call, error, task):
@@ -249,7 +250,8 @@ def test_claim_save_records_result_before_announcement(api, call, error, task):
     client.update_claim_draft.side_effect = error
     bridge = FakeBridge()
     state = CallState('session', verified_profile=PROFILE)
-    action = claim_intake.next_action(call, state, bridge)
+    on_unavailable = Mock()
+    action = claim_intake.next_action(call, state, bridge, on_unavailable)
     assert (action.name, action.target) == ('save_draft', 'api')
     factory.assert_not_called()
     assert client.mock_calls == []
@@ -271,10 +273,16 @@ def test_claim_save_records_result_before_announcement(api, call, error, task):
 
     client.update_claim_draft.side_effect = save
     bridge.set_task.side_effect = announce
-    advance(state, lambda current: claim_intake.next_action(call, current, bridge))
+    on_unavailable.side_effect = announce
+    advance(state, lambda current: claim_intake.next_action(call, current, bridge, on_unavailable))
     assert list(state.results) == ['save_draft', 'announce_save']
     assert state.result('announce_save').target == 'guava'
-    assert bridge.set_task.call_args.args[1] == task
+    if isinstance(error, api_adapter.APIUnavailableError):
+        on_unavailable.assert_called_once_with(call)
+        bridge.set_task.assert_not_called()
+    else:
+        assert bridge.set_task.call_args.args[1] == task
+        on_unavailable.assert_not_called()
     client.update_claim_draft.assert_called_once()
     factory.assert_called_once()
     client.submit_claim_draft.assert_not_called()
@@ -287,11 +295,11 @@ def test_completing_twice_does_not_repeat_actions(api, call, workflow):
     state = CallState('session')
     if workflow == 'policy':
         policy_lookup.register(object(), bridge, lambda call: state,
-                               partial(coordinator.on_verified, bridge=bridge))
+                               partial(coordinator.on_verified, bridge=bridge), Mock())
         handler = bridge.completions[policy_lookup.TASK_ID]
     else:
         state.verified_profile = PROFILE
-        claim_intake.register(object(), bridge, lambda call: state)
+        claim_intake.register(object(), bridge, lambda call: state, Mock())
         handler = bridge.completions[claim_intake.TASK_ID]
     handler(call)
     handler(call)
@@ -302,6 +310,7 @@ def test_completing_twice_does_not_repeat_actions(api, call, workflow):
 
 
 def test_start_call_records_verification_once(call, monkeypatch):
+    monkeypatch.setattr(assistance, 'check_api', Mock(return_value=[]))
     monkeypatch.setattr(coordinator, 'STORE', InMemoryStateStore())
     bridge = FakeBridge()
     coordinator.start_call(call, bridge)

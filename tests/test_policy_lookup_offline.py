@@ -36,7 +36,10 @@ def register(bridge):
         bridge.set_task(call, 'verified', coordinator.CALL_ENDING_RULE)
 
     state = CallState('test-session')
-    policy_lookup.register(object(), bridge, lambda call: state, on_verified)
+    verified = Mock(side_effect=on_verified)
+    policy_lookup.register(object(), bridge, lambda call: state, verified,
+                           lambda call: bridge.set_task(call, 'assistance-offer', ''))
+    return verified
 
 
 @pytest.fixture
@@ -82,12 +85,15 @@ def test_verification_with_fake_bridge(api, name, phone, task):
 def test_api_failures_do_not_verify(api, error, reason):
     api.get_policy.side_effect = error
     bridge = FakeBridge()
-    register(bridge)
+    verified = register(bridge)
     result = bridge.validators['policy_number']({}, 'GEC-0001')
-    assert result[0] is False and reason in result[1]
+    if isinstance(error, api_adapter.PolicyNotFoundError):
+        assert result[0] is False and reason in result[1]
+    else:
+        assert result is True
     bridge.completions[policy_lookup.TASK_ID]({'policy_number': 'GEC-0001'})
-    assert bridge.tasks[-1][1] == 'policy-verification-unavailable'
-    assert 'Do not claim verification succeeded' in bridge.tasks[-1][2]
+    assert bridge.tasks[-1][1] == 'assistance-offer'
+    verified.assert_not_called()
 
 
 def test_blank_policy_does_not_call_api(api):

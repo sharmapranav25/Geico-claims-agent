@@ -18,6 +18,7 @@ def adapter(monkeypatch):
         spec.loader.exec_module(module)
     from agent.call_state import InMemoryStateStore
     monkeypatch.setattr(module.coordinator, 'STORE', InMemoryStateStore())
+    monkeypatch.setattr(module.coordinator.assistance, 'check_api', Mock(return_value=[]))
     return module
 
 

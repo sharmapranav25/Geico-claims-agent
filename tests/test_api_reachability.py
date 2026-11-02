@@ -155,13 +155,14 @@ def test_unavailable_api_does_not_escape_workflow_or_verify(unavailable_api):
     }
     state = CallState('test-session')
     policy_lookup.register(object(), bridge, lambda call: state,
-                           on_verified=lambda call, profile: bridge.set_task(call, 'verified', ''))
+                           on_verified=lambda call, profile: bridge.set_task(call, 'verified', ''),
+                           on_unavailable=lambda call: bridge.set_task(call, 'assistance-offer', ''))
     policy_lookup.start(call, bridge)
 
     # No injected exceptions: both registered callbacks use the real adapter.
     result = bridge.validators['policy_number'](call, call['policy_number'])
-    assert result[0] is False
+    assert result is True
     assert bridge.completions[policy_lookup.TASK_ID](call) is None
-    assert bridge.tasks == [policy_lookup.TASK_ID, 'policy-verification-unavailable']
+    assert bridge.tasks == [policy_lookup.TASK_ID, 'assistance-offer']
     assert 'verified' not in bridge.tasks
     # Detailed failure wording is covered by test_api_failures_do_not_verify.
