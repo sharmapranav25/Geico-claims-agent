@@ -160,3 +160,19 @@ def test_submission_body_only_when_reference_given(adapter, monkeypatch, referen
     adapter.submit_claim_draft('1015', submission_reference=reference)
     assert request.call_args.args == ('POST', 'policies/1015/claims/draft/submit', api.SubmittedClaim)
     assert request.call_args.kwargs == ({} if reference is None else {'json': {'submission_reference': reference}})
+
+
+def test_live_claim_by_reference(adapter):
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    number = '1015'
+    reference = 'lookup-' + uuid4().hex
+    profile = adapter.get_policy(number)
+    adapter.update_claim_draft(number, api.ClaimDraftUpdate(
+        occurred_at=datetime(2026, 1, 1, tzinfo=timezone.utc), location='Test lot',
+        description='Reference lookup test', vehicle_id=profile.vehicles[0].vehicle_id))
+    claim = adapter.submit_claim_draft(number, submission_reference=reference)
+    assert adapter.get_claim_by_reference(number, reference) == claim
+    with pytest.raises(api.PolicyNotFoundError):
+        adapter.get_claim_by_reference('1014', reference)

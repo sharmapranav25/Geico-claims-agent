@@ -10,7 +10,7 @@ import pytest
 from test_api_outage import FakeBridge as BaseBridge, PROFILE, adapter, call_fields, callback_path
 from agent import api_adapter, coordinator
 from agent.call_state import ActionResult, CallState
-from agent.workflows import assistance, claim_intake, policy_lookup
+from agent.workflows import assistance, claim_intake, policy_lookup, identity, review_claim, submit_claim
 
 
 class FakeBridge(BaseBridge):
@@ -31,9 +31,10 @@ def run_call(monkeypatch, options):
     call = call_fields() | {
         'caller_name': 'Michael Johnson' if name_ok else 'Jordan Smith',
         'caller_phone': '628-268-8753' if phone_ok else '555-555-0100',
-        'request_type': request_type, 'wants_representative': wants_rep, 'wants_callback': wants_callback,
+        'identity_confirmed': 'yes', 'wants_representative': wants_rep, 'wants_callback': wants_callback,
         'submission_decision': decision, 'needs_more_help': needs_more_help,
     }
+    call.pop('request_type', None)
     client = Mock()
     client.list_policies.side_effect = None if api_up else api_adapter.APIUnavailableError('offline')
     client.get_policy.side_effect = None if policy_found else api_adapter.PolicyNotFoundError('missing', 404)
@@ -59,6 +60,7 @@ def run_call(monkeypatch, options):
         count = len(bridge.tasks) + len(bridge.instructions) + len(bridge.infos)
         if result.target in {'api', 'local'}:
             assert count == command_count
+        assert state.result(result.name) is None  # Reuse requires the specified clear_results path.
         recorded.append(result.name)
         command_count = count
         original_record(result)
@@ -97,19 +99,30 @@ def run_call(monkeypatch, options):
         result = bridge.validators['policy_number'](call, call['policy_number'])
         if policy_found:
             assert result is True
-            invoke(bridge.completions[policy_lookup.TASK_ID], added_info=int(name_ok and phone_ok))
+            invoke(bridge.completions[identity.TASK_ID])
+            invoke(bridge.completions[identity.CONFIRM_TASK_ID], added_info=int(name_ok and phone_ok))
+            if not (name_ok and phone_ok):
+                for _ in range(identity.MAX_IDENTITY_RETRIES):
+                    invoke(bridge.completions[identity.TASK_ID])
+                    invoke(bridge.completions[identity.CONFIRM_TASK_ID])
             if name_ok and phone_ok:
-                invoke(bridge.completions[coordinator.REQUEST_TASK_ID])
+                call['request_type'] = request_type
+                invoke(bridge.completions[coordinator.REQUEST_TASK_ID], added_info=int(request_type == coordinator.REPORT_OWN_LOSS))
                 if request_type == coordinator.REPORT_OWN_LOSS:
                     assert bridge.validators['occurred_at'](call, call['occurred_at']) is True
                     invoke(bridge.completions[claim_intake.TASK_ID])
                     if save_ok:
-                        invoke(bridge.completions[claim_intake.REVIEW_TASK_ID])
+                        invoke(bridge.completions[review_claim.REVIEW_TASK_ID])
                         if decision == 'approve' and submit_ok:
-                            invoke(bridge.completions[claim_intake.SUBMITTED_TASK_ID])
+                            invoke(bridge.completions[submit_claim.SUBMITTED_TASK_ID])
         else:
             assert result[0] is False
-    assert len(recorded) == len(set(recorded))
+    retry_names = {'start_confirm', 'fetch_policy', 'identity_retry'}
+    once = [name for name in recorded if name not in retry_names]
+    assert len(once) == len(set(once))
+    assert recorded.count('identity_retry') <= identity.MAX_IDENTITY_RETRIES
+    assert recorded.count('fetch_policy') <= identity.MAX_IDENTITY_RETRIES + 1
+    assert recorded.count('start_confirm') <= identity.MAX_IDENTITY_RETRIES + 1
     assert client.submit_claim_draft.call_count <= 1
     assert not client.submit_claim_draft.called or decision == 'approve'
     return [task.task_id for task in bridge.tasks], state
@@ -130,8 +143,9 @@ def test_every_decision_selects_one_path(monkeypatch, callback_path, options):
     else:
         expected = ['verify-policy']
         if found:
+            expected += ['confirm-identity']
             if not (name_ok and phone_ok):
-                expected += ['policy-verification-mismatch']
+                expected += ['verify-policy', 'confirm-identity'] * identity.MAX_IDENTITY_RETRIES + ['policy-verification-mismatch']
             elif request_type == coordinator.OTHER_REQUEST:
                 expected += ['confirm-request', 'unsupported-request']
             else:
@@ -162,7 +176,7 @@ def test_every_decision_selects_one_path(monkeypatch, callback_path, options):
 def test_evaluators_are_repeatable_without_actions(monkeypatch, callback_path, evaluator, stage):
     call = call_fields()
     bridge = FakeBridge()
-    state = CallState('evaluation')
+    state = CallState('evaluation', facts=tuple(call.items()))
     factory = Mock()
     monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
     write = Mock()
@@ -175,13 +189,17 @@ def test_evaluators_are_repeatable_without_actions(monkeypatch, callback_path, e
             state.record(ActionResult('start_verification', 'guava', True))
         evaluate = coordinator.next_start_action
     elif evaluator == 'policy':
+        state.record(ActionResult('start_confirm', 'guava', True))
+        state.mark_done(identity.CONFIRM_TASK_ID)
+        call['identity_confirmed'] = 'yes'
         if stage != 'new':
             state.record(ActionResult('fetch_policy', 'api', stage != 'failed', PROFILE))
         if stage == 'mismatch':
             call['caller_phone'] = '555-555-0100'
+            state.set_fact('caller_phone', call['caller_phone'])
         if stage == 'done':
             state.record(ActionResult('announce_verification', 'guava', True))
-        evaluate = partial(policy_lookup.next_action, on_verified=verified, on_unavailable=unavailable)
+        evaluate = partial(identity.next_action, on_verified=verified, on_unavailable=unavailable)
     elif evaluator == 'request':
         if stage != 'new':
             state.verified_profile = PROFILE
@@ -258,3 +276,71 @@ def test_intent_b_does_not_replace_active_task(callback_path, stage):
         state.record(ActionResult('start_assistance', 'guava', True))
     assert bridge.actions['intent_b'](call) == coordinator.on_intent_a(call)
     assert bridge.tasks == bridge.instructions == bridge.infos == []
+
+
+@pytest.mark.parametrize('branch', ['no_identity', 'missing', 'optional', 'change', 'add',
+                                    'timeout_found', 'timeout_missing', 'timeout_unavailable'])
+def test_new_branches_through_registered_handlers(monkeypatch, callback_path, branch):
+    bridge, call = FakeBridge(), call_fields()
+    call.pop('request_type')
+    call.update(identity_confirmed='yes', submission_decision='approve', needs_more_help='no')
+    client = Mock()
+    client.get_policy.return_value = PROFILE
+    client.submit_claim_draft.return_value = SimpleNamespace(claim_number='CLM-BRANCH')
+    factory = Mock()
+    factory.return_value.__enter__ = Mock(return_value=client)
+    factory.return_value.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
+    coordinator.register(object(), bridge)
+
+    def finish(task):
+        before = len(bridge.tasks)
+        bridge.completions[task](call)
+        assert len(bridge.tasks) == before + 1
+
+    coordinator.start_call(call, bridge)
+    finish(identity.TASK_ID)
+    if branch == 'no_identity':
+        call['identity_confirmed'] = 'no'
+        for _ in range(identity.MAX_IDENTITY_RETRIES):
+            finish(identity.CONFIRM_TASK_ID)
+            finish(identity.TASK_ID)
+        finish(identity.CONFIRM_TASK_ID)
+        assert [task.task_id for task in bridge.tasks] == ['verify-policy', 'confirm-identity'] * 3 + ['policy-verification-mismatch']
+        client.get_policy.assert_not_called()
+        return
+    finish(identity.CONFIRM_TASK_ID)
+    call['request_type'] = coordinator.REPORT_OWN_LOSS
+    finish(coordinator.REQUEST_TASK_ID)
+    state = coordinator.state_for(call, bridge)
+    if branch == 'missing':
+        call['occurred_at'] = None
+    if branch == 'optional':
+        # The optional value was volunteered earlier, so model its absence there too.
+        state.facts = tuple((key, value) for key, value in state.facts if key != 'loss_type')
+        call['loss_type'] = None
+    finish(claim_intake.TASK_ID)
+    prefix = ['verify-policy', 'confirm-identity', 'confirm-request', 'collect-claim']
+    if branch == 'missing':
+        assert [task.task_id for task in bridge.tasks] == prefix + ['claim-missing-details']
+        client.update_claim_draft.assert_not_called()
+        return
+    expected = prefix + ['review-claim']
+    if branch in ('change', 'add'):
+        call.update(submission_decision=branch, corrected_field='location', corrected_value='New detail')
+        finish(review_claim.REVIEW_TASK_ID)
+        expected += ['review-claim']
+        assert state.corrections == 1
+        call['submission_decision'] = 'approve'
+    if branch.startswith('timeout'):
+        claim = SimpleNamespace(claim_number='CLM-RECOVERED')
+        client.submit_claim_draft.side_effect = [api_adapter.APIUnavailableError('timeout'), claim]
+        if branch == 'timeout_found':
+            client.get_claim_by_reference.return_value = claim
+        else:
+            client.get_claim_by_reference.side_effect = (api_adapter.PolicyNotFoundError('missing', 404)
+                if branch == 'timeout_missing' else api_adapter.APIUnavailableError('offline'))
+    finish(review_claim.REVIEW_TASK_ID)
+    expected += ['claim-status-unknown' if branch == 'timeout_unavailable' else 'claim-submitted']
+    assert [task.task_id for task in bridge.tasks] == expected
+    assert client.submit_claim_draft.call_count == (2 if branch == 'timeout_missing' else 1)

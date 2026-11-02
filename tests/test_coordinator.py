@@ -23,14 +23,14 @@ def adapter(monkeypatch):
 
 
 def test_call_starts_in_verification(adapter):
-    from agent.workflows import policy_lookup
+    from agent.workflows import policy_lookup, identity
 
     call = MockCall()
     adapter.coordinator.start_call(call, adapter.SDK_BRIDGE)
     command, = call._command_queue
     assert isinstance(command, SetTaskCommand)
-    assert command.task_id == policy_lookup.TASK_ID
-    assert {item.key for item in command.action_items} == {'policy_number', 'caller_name', 'caller_phone'}
+    assert command.task_id == identity.TASK_ID
+    assert {item.key for item in command.action_items} == {field.key for field in identity.identity_fields()}
     assert adapter.coordinator.KEEP_CONTEXT_RULE in command.objective
     assert adapter.coordinator.CALL_ENDING_RULE in command.objective
 
@@ -85,7 +85,7 @@ def test_verified_policy_context_precedes_request_task(adapter):
     bridge = Mock()
     call = object()
     adapter.coordinator.on_verified(call, profile(), bridge)
-    assert [entry[0] for entry in bridge.mock_calls] == ['add_info', 'set_task']
+    assert [entry[0] for entry in bridge.mock_calls] == ['add_info', 'get_session_id', 'set_task']
     bridge.add_info.assert_called_once_with(call, 'verified_policy', {
         'policy_number': '1001', 'policyholder': 'Michael Johnson', 'vehicles': ['2021 Toyota Camry'],
     })
@@ -139,3 +139,36 @@ def test_placeholder_content_unchanged(adapter):
         'dispatch help, transfer the call, or arrange a callback. '
         + adapter.coordinator.CALL_ENDING_RULE
     )
+
+
+@pytest.mark.parametrize('known', [False, True])
+def test_verified_request_fact_routes_with_verified_line(adapter, known):
+    from agent.workflows import identity
+    from guava import Say
+
+    call = MockCall()
+    state = adapter.coordinator.state_for(call, adapter.SDK_BRIDGE)
+    state.verified_profile = profile()
+    if known:
+        state.set_fact('request_type', adapter.coordinator.REPORT_OWN_LOSS)
+    adapter.coordinator.on_verified(call, profile(), adapter.SDK_BRIDGE)
+    task = call._command_queue[-1]
+    assert task.task_id == ('collect-claim' if known else 'confirm-request')
+    assert any(isinstance(item, Say) and item.statement == identity.VERIFIED_LINE for item in task.action_items)
+
+
+@pytest.mark.parametrize('found', [False, True])
+def test_question_after_uncertain_submission(adapter, found):
+    from agent import api_adapter
+    from agent.call_state import ActionResult
+
+    call = MockCall()
+    state = adapter.coordinator.state_for(call, adapter.SDK_BRIDGE)
+    state.verified_profile = profile()
+    state.record(ActionResult('submit_claim', 'api', False, api_adapter.APIUnavailableError('timeout')))
+    if found:
+        state.record(ActionResult('check_submission', 'api', True, SimpleNamespace(claim_number='CLM-FOUND')))
+    answer = adapter.coordinator.on_question(call, 'Was it filed?', adapter.SDK_BRIDGE)
+    assert 'has not been submitted' not in answer
+    assert ('CLM-FOUND' in answer) is found
+    assert ('not confirmed whether' in answer) is (not found)

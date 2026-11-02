@@ -46,6 +46,7 @@ class Scenario:
     fallback_turn: str = "Someone rear-ended me yesterday around 3pm at Main and 5th in San Jose. It was a collision."
     max_asks: tuple[tuple[str, int], ...] = ()
     must_ask: tuple[str, ...] = ()
+    identity_confirmation: str = "Yes, that's correct."
 
 
 def identity(number, name, phone='628-268-8753'):
@@ -60,7 +61,7 @@ SCENARIOS = (
              required_tasks=('review-claim', 'claim-submitted'),
              required_logs=('Policy completion verified', 'Claim draft saved', 'Claim submitted'),
              claims_added=1, claim_number_spoken=True, expect_hangup=True,
-             agent_must_contain=('would you like me to submit', 'claims portal')),
+             agent_must_contain=('add anything', 'claims portal')),
     Scenario('hard_1_role', 1, ("I'm calling for my mother, William Harris. Her policy number is 1011. "
                               'Her phone is 628-268-8753. I need to report that her car was stolen.',),
              forbidden_tasks=('confirm-request', 'collect-claim'),
@@ -72,21 +73,25 @@ SCENARIOS = (
                               'Name is Jennifer Lewis. My phone number is 628-268-8753.',),
              terminal_task='unsupported-request', forbidden_tasks=('collect-claim',)),
     Scenario('hard_3_identity', 3, (identity('1009', 'Jordan Smith', '555-555-0100'),),
+             gated_turns=(('verify-policy#2', identity('1009', 'Jordan Smith', '555-555-0100')),
+                          ('verify-policy#3', identity('1009', 'Jordan Smith', '555-555-0100'))),
              terminal_task='policy-verification-mismatch', forbidden_tasks=('confirm-request',),
-             agent_must_not_contain=('John Anderson', '8753')),
+             agent_must_contain=("wasn't able to verify",),
+             agent_must_not_contain=('John Anderson', '8753', 'against the policy')),
     Scenario('hard_4_missing_info', 4, (identity('1010', 'Amanda Clark'),
              "My Toyota Camry was hit in a parking lot, but I honestly don't remember the date."),
-             forbidden_logs=('Claim draft saved',),
-             evaluate_pass=('The agent asks for the date without inventing one, and explains it is still needed.',), pending_step=4),
-    Scenario('hard_5_correction', 5, (identity('1011', 'William Harris'), CLAIM,
-             'Actually, I got that wrong. It was at Oak Street, not Main and 5th.'),
-             draft_policy='1011', draft_contains='Oak',
-             evaluate_pass=('The agent updates the location and asks the caller to review the revised details again.',), pending_step=4),
+             fallback_turn="I really can't provide the date.", terminal_task='claim-missing-details',
+             forbidden_logs=('Claim draft saved',), claims_added=0),
+    Scenario('hard_5_correction', 5, (identity('1011', 'William Harris'), CLAIM),
+             gated_turns=(('review-claim', 'Change the location to Oak Street.'),
+                          ('review-claim#2', "No, please don't submit anything.")),
+             required_logs=('Claim fact corrected',), draft_policy='1011', draft_contains='Oak',
+             claims_added=0, agent_must_contain=('oak street',)),
     Scenario('hard_6_permission', 6, (identity('1012', 'Jennifer Lewis'), CLAIM),
              gated_turns=(("review-claim", "No, please don't submit anything."),),
              terminal_task='claim-not-submitted', required_tasks=('review-claim',),
              required_logs=('Claim draft saved', 'Claim not submitted'), forbidden_logs=('Claim submitted',),
-             claims_added=0, agent_must_contain=('would you like me to submit',)),
+             claims_added=0, agent_must_contain=('add anything',)),
     Scenario('no_repeat_multi_vehicle', None, (identity('1008', 'Ashley Moore'), 'It was my 2021 Toyota Camry.'),
              gated_turns=(("review-claim", "No, please don't submit anything."),),
              required_tasks=('review-claim',), claims_added=0, max_asks=(("which vehicle|camry|civic", 1),)),
@@ -109,8 +114,16 @@ SCENARIOS = (
              api_down=True, terminal_task='callback-saved',
              required_tasks=('assistance-offer', 'callback-offer', 'collect-callback'),
              required_logs=('Callback saved',), callback_written=True, callback_slot=(1, 10)),
-    Scenario('hard_8_disconnect', 8, (identity('1009', 'John Anderson'), 'My Toyota Camry was hit yesterday.'),
-             hang_up_after_turns=True, required_logs=('Resume code sent',), pending_step=7),
+    Scenario('spelled_name_identity', None,
+             ("I want to report a loss on my own policy. My policy number is 1006. My name is spelled J E S S I C A B R O W N. My phone number is 628-268-8753.",),
+             required_logs=('Policy completion verified',), required_tasks=('confirm-identity',)),
+    Scenario('volunteered_facts', None,
+             ('Hi, I got rear-ended on Main Street and I want to start a claim.',
+              'My policy number is 1010. My name is Amanda Clark. My phone number is 628-268-8753.',
+              'It happened yesterday at 3pm. It was a collision.'),
+             gated_turns=(('review-claim', "No, please don't submit anything."),),
+             forbidden_tasks=('confirm-request',), agent_must_contain=('add anything',),
+             max_asks=(('what happened|where did|where was', 0),)),
     Scenario('hard_9_multiple', 9, (identity('1010', 'Amanda Clark'),
              'I have two separate accidents to report, one yesterday and one last month.'),
              evaluate_pass=('The agent asks which incident to handle first and keeps them separate.',), pending_step=5),
@@ -167,6 +180,8 @@ def test_golden(scenario, tmp_path):
     for line in transcript.splitlines():
         if 'here is what i have' in line.casefold():
             break
+        if 'i have your policy number as' in line.casefold():
+            continue  # Confirmation is not a repeated request for the identity values.
         if line.startswith('[agent]:') and '?' in line:
             asked_lines.append(line.removeprefix('[agent]:').strip())
     max_ask_matches = {pattern: [line for line in asked_lines if re.search(pattern, line, re.IGNORECASE)]
@@ -202,7 +217,7 @@ def test_golden(scenario, tmp_path):
     assert all(normalize_agent_text(text) not in agent_lines for text in scenario.agent_must_not_contain)
     if scenario.api_down:
         # The stop condition applies to both outage scenarios, not just one.
-        from agent.workflows import assistance
+        from agent.workflows import assistance, identity
         assert normalize_agent_text(assistance.UNAVAILABLE_LINE) in agent_lines
         assert normalize_agent_text(assistance.NO_REP_LINE) in agent_lines
         assert normalize_agent_text('how can i help') not in agent_lines
@@ -229,7 +244,7 @@ def test_golden(scenario, tmp_path):
         assert draft is not None
         assert scenario.draft_contains in draft.model_dump_json()
     if scenario.callback_written or scenario.callback_slot is not None:
-        from agent.workflows import assistance
+        from agent.workflows import assistance, identity
         from datetime import datetime
         records = [json.loads(line) for line in callback.read_text().splitlines()]
         assert len(records) == 1
@@ -274,6 +289,8 @@ def run_scenario(scenario):
 
     lock = Lock()
     tasks = []
+    task_counts = {}
+    confirmed = 0
 
     def emit(kind, **values):
         with lock:
@@ -305,6 +322,7 @@ def run_scenario(scenario):
     def observe_task(call, task_id, *args, **kwargs):
         result = original_set_task(call, task_id, *args, **kwargs)
         tasks.append(task_id)
+        task_counts[task_id] = task_counts.get(task_id, 0) + 1
         emit('task', task=task_id)
         if task_id == scenario.terminal_task:
             signal.setitimer(signal.ITIMER_REAL, 15)
@@ -325,27 +343,44 @@ def run_scenario(scenario):
             receive_closing(session)
         return event
 
+    def appeared(gate):
+        task, separator, occurrence = gate.partition('#')
+        return task_counts.get(task, 0) >= (int(occurrence) if separator else 1)
+
+    def answer_identity(session):
+        nonlocal confirmed
+        if tasks and tasks[-1] == 'confirm-identity' and task_counts['confirm-identity'] > confirmed:
+            confirmed = task_counts['confirm-identity']
+            session.say(scenario.identity_confirmation)
+            snapshot(session)
+            session.wait_for_turn()
+
     with patch.object(guava.Call, 'set_task', observe_task), patch.object(TestSession, 'recv', observe_recv):
         with agent.test() as session:
             try:
                 try:
                     session.wait_for_turn()
                     for turn in scenario.turns:
+                        answer_identity(session)
                         session.say(turn)
                         snapshot(session)
                         session.wait_for_turn()
+                    answer_identity(session)
                     for task_id, turn in scenario.gated_turns:
                         for _ in range(3):
-                            if task_id in tasks:
+                            answer_identity(session)
+                            if appeared(task_id):
                                 break
                             session.say(scenario.fallback_turn)
                             snapshot(session)
                             session.wait_for_turn()
-                        while task_id not in tasks:
+                        while not appeared(task_id):
+                            answer_identity(session)
                             session.recv()
                         session.say(turn)
                         snapshot(session)
                         session.wait_for_turn()
+                    answer_identity(session)
                     if scenario.hang_up_after_turns:
                         return  # Closing the test context simulates caller disconnection.
                     if scenario.evaluate_pass:

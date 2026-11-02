@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, checklist, coordinator
 from agent.call_state import CallState
-from agent.workflows import policy_lookup
+from agent.workflows import policy_lookup, identity
 
 
 @pytest.fixture(autouse=True)
@@ -134,7 +134,7 @@ class FakeBridge:
         self.validators = {}
         self.completions = {}
 
-    def set_task(self, call, task_id, objective, todos=(), *, fields=(), completion_criteria=""):
+    def set_task(self, call, task_id, objective, todos=(), *, fields=(), completion_criteria="", say=()):
         self.tasks.append(task_id)
 
     def get_field(self, call, key):
@@ -159,12 +159,14 @@ def test_unavailable_api_does_not_escape_workflow_or_verify(unavailable_api):
         on_verified=lambda call, profile: bridge.set_task(call, 'verified', ''),
         on_unavailable=lambda call: bridge.set_task(call, 'assistance-offer', ''),
     ))
-    policy_lookup.start(call, bridge)
+    identity.start(call, bridge)
 
     # No injected exceptions: both registered callbacks use the real adapter.
     result = bridge.validators['policy_number'](call, call['policy_number'])
     assert result is True
-    assert bridge.completions[policy_lookup.TASK_ID](call) is None
-    assert bridge.tasks == [policy_lookup.TASK_ID, 'assistance-offer']
+    assert bridge.completions[identity.TASK_ID](call) is None
+    call['identity_confirmed'] = 'yes'
+    assert bridge.completions[identity.CONFIRM_TASK_ID](call) is None
+    assert bridge.tasks == [identity.TASK_ID, identity.CONFIRM_TASK_ID, 'assistance-offer']
     assert 'verified' not in bridge.tasks
     # Detailed failure wording is covered by test_api_failures_do_not_verify.

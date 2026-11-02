@@ -14,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, coordinator
 from agent.call_state import InMemoryStateStore
-from agent.workflows import assistance, claim_intake, policy_lookup
+from agent.workflows import assistance, claim_intake, policy_lookup, identity
 
 PROFILE = SimpleNamespace(
     policy_number='1001', name='Michael Johnson', phone='628-268-8753',
@@ -140,7 +140,7 @@ def test_up_start_has_no_say(adapter, monkeypatch):
     call = MockCall()
     coordinator.start_call(call, adapter.SDK_BRIDGE)
     command, = call._command_queue
-    assert command.task_id == policy_lookup.TASK_ID
+    assert command.task_id == identity.TASK_ID
     assert not any(isinstance(item, Say) for item in command.action_items)
     assert coordinator.state_for(call, adapter.SDK_BRIDGE).result('start_verification').ok
 
@@ -259,8 +259,10 @@ def test_outage_validator_allows_assistance_but_never_verifies(unavailable_api, 
     bridge = registered()
     call = call_fields()
     assert bridge.validators['policy_number'](call, call['policy_number']) is True
-    bridge.completions[policy_lookup.TASK_ID](call)
-    assert [task.task_id for task in bridge.tasks] == ['assistance-offer']
+    bridge.completions[identity.TASK_ID](call)
+    call['identity_confirmed'] = 'yes'
+    bridge.completions[identity.CONFIRM_TASK_ID](call)
+    assert [task.task_id for task in bridge.tasks] == ['confirm-identity', 'assistance-offer']
     assert coordinator.state_for(call, bridge).verified_profile is None
 
 

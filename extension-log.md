@@ -138,3 +138,157 @@ No test failures occurred. The 22 deselected tests are excluded by the configure
 Blockers at completion: none. Clarifications approved the two existing exceptions and the one completion-inventory assertion change. No behavior assertion changes were needed.
 
 End: 2026-11-02 15:02:56 PST (date command; includes clarification pauses).
+
+# Prompt 2 — facts, identity, review and uncertain submission
+
+Start: 2026-11-02 15:13:20 PST (original `date` reading, retained across clarification pauses).
+
+Baseline only. The KPI is unproven until a measured addition is completed and tested.
+
+## Scope and extension impact
+
+- Mock API repository, branch `submission-lookup`: changed `app.py`, `test_app.py`, and `README.md`. Added a locked, policy-scoped by-reference claim lookup returning a deep copy or 404, with found/missing/cross-policy tests and one endpoint-table row. Left untracked `terminal-commands.md` alone.
+- Agent repository, branch `facts-and-verification`: changed `api_adapter.py`, `call_state.py`, `checklist.py`, `coordinator.py`, `workflows/policy_lookup.py`, `workflows/assistance.py`, `workflows/claim_intake.py`, `pyproject.toml`, tests and this log. Added `verification.py`, `workflows/identity.py`, `workflows/review_claim.py`, `workflows/submit_claim.py`, and `tests/test_call_state.py`, `tests/test_identity.py`, `tests/test_verification.py`. Deleted `tests/test_call_paths.py` and removed the agent_sim marker as explicitly requested.
+- Facts live per call as a tuple. Identity captures volunteered facts, reads identity back, and retries with spelling after a mismatch. Claim intake owns later claim-fact writes, review captures corrections/additions, and submission checks uncertain results before one same-reference retry.
+- New checklist checks: **0**. Existing check functions changed: **7** (3, 6, 7, 8, 9, 10, 11). Check 5's routing logic is unchanged; checks 1, 2 and 4 only regain their Prompt 3 comments. The new behavior lives in workflows and the existing check extension points; coordination gains the specified capture dispatch and duplicate-completion guard.
+- Unrelated changes: none intended. No SDK adapter changes, branch switches, commits, pushes, phone calls or golden/model execution. Existing intent-command and local callback exceptions remain.
+
+## Accepted clarifications
+
+- Exact identity objectives retain `Never use the phrase 'against the policy'.` Privacy tests remove that exact sentence before testing objectives, while testing Say lines without an exclusion.
+- Intake omits correction fields too when every CLAIM_FIELD exists; otherwise correction fields accompany the remaining fields. Both cases have tests.
+- The completion guard skips mark/capture for an already-completed task but always reevaluates the checklist.
+- The duplicate-review-add test was explicitly withdrawn. Replacement tests verify duplicate approve submits once, one add appends once/counts once, and duplicate verify-policy selects start_confirm once.
+
+## Commands and actual results
+
+1. Mock API: `.venv/bin/python -m pytest test_app.py`, exit 0.
+
+```text
+============================= test session starts ==============================
+platform darwin -- Python 3.12.4, pytest-9.2.0, pluggy-1.7.0
+rootdir: /Users/pranavsharma/Files/personal projects/GEICO Claims Mock API
+plugins: anyio-4.16.0
+collected 44 items
+
+test_app.py ............................................                 [100%]
+======================== 44 passed, 2 warnings in 0.77s ========================
+```
+
+Warnings: StarletteDeprecationWarning for httpx with starlette.testclient (suggesting httpx2); PytestCacheWarning because the sandbox could not write `.pytest_cache/v/cache/nodeids` in the mock repo. No API test failures.
+
+2. Mock API: `.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8000`. No existing listener was present, so a fresh process loaded the updated endpoint. Startup used sandbox escalation for localhost binding.
+
+```text
+INFO:     Started server process [99135]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+```
+
+Stopped PID 99135 after testing; the subsequent port-8000 lsof check returned no listener.
+
+3. Agent: `uv run pytest`, with escalation for cache access and localhost tests.
+
+First run, exit 1:
+
+```text
+collected 2373 items / 18 deselected / 2355 selected
+=============== 385 failed, 1970 passed, 18 deselected in 9.55s ================
+```
+
+Failure causes:
+
+- 384 single-path matrix cases retained the old assertion that action names never repeat during an entire call. Prompt 2 explicitly clears and repeats identity actions on retries. The test now asserts that a result name is absent from state when recorded, non-retry names remain unique, and retry-action counts respect the specified limit. Per-callback duplicate checks remain intact.
+- `test_verified_policy_context_precedes_request_task` expected only add_info/set_task in a wrapped bridge's call log. The specified `state_for` lookup adds get_session_id between them. Updated that exact order expectation.
+
+Second run, exit 0:
+
+```text
+===================== 2355 passed, 18 deselected in 7.61s ======================
+```
+
+After adding the eight requested matrix branches, exit 0:
+
+```text
+===================== 2363 passed, 18 deselected in 7.62s ======================
+```
+
+Final run after punctuation and failure-privacy coverage, exit 0:
+
+```text
+===================== 2367 passed, 18 deselected in 7.59s ======================
+```
+
+The 18 golden scenarios were deselected, not executed. A subsequent golden-only driver adjustment excludes the exact identity read-back from “repeated identity question” counts; it was compiled, not run. Python compilation and `git diff --check` pass in the final working tree. Full initial-failure and final-run stdout accompany the handoff.
+
+## Requirement coverage
+
+Passing tests establish the stated deterministic behavior, not arbitrary model compliance or live speech performance.
+
+| Quoted requirement / direction | Enforcing code | Passing evidence and limits |
+| --- | --- | --- |
+| Step 4: “Failed verification discloses nothing.” | `identity.next_action`, `_retry_or_fail`, `_announce_mismatch`: never announce stored answers on failure; only success sets verified_profile. | `test_retries_limit_and_privacy`, `test_fetch_outage_announces_once`, existing fake/live identity matching tests. Code-owned Say/objective privacy covered; arbitrary generated speech is not proven. |
+| Step 4: “Required and optional gaps differ.” | `verification.missing_required`, `claim_intake.next_action`; missing loss_type remains None. | `test_skipped_required_fact_never_saves`, `test_optional_loss_type_stays_none`, `test_dates`. |
+| Step 4: “Corrections void approval.” | `CallState.set_fact`, `claim_intake.apply_correction`, `apply_addition`. | `test_fact_replacement_and_approval`, `test_review_changes_and_additions`; actual changed values clear approval, unchanged values retain it as specified. |
+| Step 4: “Submission timeouts remain unknown; status is checked using the existing reference before a safe retry.” | `submit_claim.next_submit_action`, `submitted_claim`, `submission_uncertain`; API `get_claim_by_reference`. | `test_uncertain_submission_checks_before_retry`, `test_timeout_checks_submission_in_check_ten`, `test_live_claim_by_reference`, mock lookup tests. |
+| Check 7: optional details stay unknown, do not block filing, no invented value. | `claim_intake.claim_facts`/`next_action`, `review_claim.review_line`: None saved and “not provided” read back. | `test_optional_loss_type_stays_none`; model extraction accuracy is not established. |
+| Check 7: required fact remains missing after asking → block submission. | `verification.missing_required`, `claim_intake.next_action` routes to announce_missing before draft save. | `test_skipped_required_fact_never_saves` covers every required key. Asking before skipping is a field instruction only, not independently enforced by code. |
+| Check 7: explain what is needed and offer assistance; describe saved intake only with evidence, no portal-completion promise. | `claim_intake._announce_missing` names missing facts and says nothing submitted; specified objective disallows portal-completion promises. | Missing-details tests cover blocked save and task selection. **Partial:** the exact requested implementation does not offer assistance here. No automatic assistance route was added. Broader model promises are instruction-only. |
+| Check 8: correction updates information, invalidates earlier approval, repeats affected checks. | `apply_correction`/`apply_addition` update facts and clear specified save/review results and review completion; checklist reevaluates. | `test_review_changes_and_additions`, `test_correction_repeats_save_and_review`, `test_corrections_stop_at_limit`. |
+| Check 8: read back revised information and obtain fresh approval. | `review_claim.start_review`, `check_consistency`, `submit_claim.next_submit_action`. | `test_review_changes_and_additions` checks new read-back before a subsequent approve; `test_missing_or_changed_review_cannot_submit` blocks stale snapshots. |
+| Check 9: approval not withdrawn and current information unchanged when action happens; enforce required checks. | `verification.approval_is_valid` requires approve plus equality with reviewed data; checklist gates verification, information and review before submit. | `test_approval`, `test_no_explicit_approval_does_not_submit`, `test_missing_or_changed_review_cannot_submit`, `test_unverified_state_cannot_submit`. Approval/decline extraction is model-provided; an independent asynchronous withdrawal channel is not implemented. |
+| Check 10: status lookup with the same reference before another filing attempt. | `submit_claim.next_submit_action` checks once, retries only on PolicyNotFoundError, reusing the existing reference. | `test_uncertain_submission_checks_before_retry` asserts API call order and reference equality. |
+| Check 10: prevent new filing while earlier result unresolved. | Stored submit/check/retry results and announce guard prevent another attempt after unresolved status announcement. | `test_uncertain_submission_checks_before_retry` repeats approve and verifies call counts; retry failure stays uncertain. Returning calls/process restarts remain outside this protection. |
+| Check 10: explain known status, no confirmed success/failure while uncertain. | `_announce_status_unknown`; `coordinator.on_question` uses submitted_claim/submission_uncertain. | `test_uncertain_submission_checks_before_retry`, `test_question_after_uncertain_submission`; programmed answers covered, arbitrary model speech not proven. |
+| Direction: record volunteered facts, ask only for missing facts, verify before use. | `identity.capture` captures optional facts; verification gate precedes claim intake; `claim_intake.start` omits known fields. | `test_volunteered_facts_survive_empty_retry`, `test_existing_facts_omit_fields_but_keep_correction_fields`, `test_all_facts_present_has_no_fields_and_advances`, `test_volunteered_request_skips_start_request`. Interpreting free speech is model-driven and unverified by offline tests. |
+| Direction: identity read-back, retry and spelling after mismatch. | `identity._confirm_identity`, `_retry_or_fail`, pure `verification.identity_matches`. | `test_readback_and_duplicate_completion_fetch_once`, `test_retries_limit_and_privacy`, `test_spelling_persists_after_no`, `test_identity_matches`. Existing policy-existence validator still performs its preliminary API lookup before read-back; identity matching/fetch action waits for yes. |
+| Direction: ask whether caller wants to add anything; file only on explicit approval. | `review_claim.review_line`/`capture`, `verification.approval_is_valid`, submission gate. | `test_review_speaks_every_field_without_claiming_submission`, `test_review_changes_and_additions`, `test_no_explicit_approval_does_not_submit`. Distinguishing “no more to add” from filing approval is instructed to the model; golden scenarios were written but not run. |
+| One-action rule: “Each checklist item selects and performs only one next action per evaluation. It does not launch multiple actions together.” | `checklist.evaluate` selects one action; coordinator/action_loop records it before reevaluation. | Existing first-open/priority/isolation tests, updated matrix and new branch matrix, correction/timeout checklist sequences. Existing direct intent commands and local callback action remain explicit exceptions. |
+
+## Known limitations
+
+- A duplicate review-claim callback arriving after the review has restarted would be treated as a fresh answer. The SDK dispatches one completion per TaskCompletedEvent, the corrections limit bounds it, and the read-back shows the caller any change. This is the explicitly accepted limitation; no duplicate-answer detection was added.
+- The guard prevents repeated capture for tasks still marked complete. Specified retry/correction paths clear completion so subsequent task instances can complete.
+- Existing `on_intent_b` and `on_immediate_danger_or_other` commands remain outside Action.run until Prompt 3. Outage save_callback remains a local action touching neither adapter.
+- Safety, communication, changed intent, multiple requests, unsupported callers and requests for a human remain deferred. Checks 1, 2 and 4 are placeholders, not covered implementations.
+- No SMS, resume, saved intake on disk, post-verification identity edits, submitted-claim editing, or existing-claim handling. The backend remains in memory; reference reconciliation does not survive server restart. A returning caller can still duplicate a prior report.
+- No new concurrency control for call-state event processing was added. Sequential duplicate completion and backend reference replay are covered; concurrent event behavior is not established.
+- Explicit missing-detail assistance is not implemented by the exact requested missing-detail action. Asking/volunteered extraction, retry wording compliance, optional-field skipping, and semantic approval interpretation depend partly on model instructions. Empty-field task advancement and live telephony behavior are not proven by offline tests.
+- Existing live callback conversation limitations remain. Golden scenarios and phone calls were not run.
+- No new checklist check was required, but this coordinated foundational change is not a separately measured feature addition proving the KPI.
+
+## Existing test change inventory
+
+The following names are every existing test/helper whose AST changed, grouped by file. Import-only moves accompany these changes. New tests are additional coverage, not replacements for unrelated assertions.
+
+- `tests/test_action_loop.py`: Moved identity rules/actions, seeded confirmed identity and fact snapshots, and adjusted the pre-confirmation duplicate-completion expectation; action sequencing/isolation assertions retained. Existing names: `test_policy_evaluation_sends_no_commands_or_api_calls`, `test_verified_path_records_fetch_before_announcement`, `test_policy_actions_call_only_their_target`, `test_failed_fetch_records_exception_then_announces`, `test_claim_save_records_result_before_announcement`, `test_completing_twice_does_not_repeat_actions`, `test_start_call_records_verification_once`.
+
+- `tests/test_api_adapter.py`: No existing test body changed; added live by-reference lookup coverage using policy 1015. Existing names: none.
+
+- `tests/test_api_outage.py`: Moved identity task/start names and inserted confirmation before lookup-outage completion; callback expectations unchanged. Existing names: `test_up_start_has_no_say`, `test_outage_validator_allows_assistance_but_never_verifies`.
+
+- `tests/test_api_reachability.py`: FakeBridge accepts Say, identity start moved, and confirmation precedes the outage announcement. Existing names: `FakeBridge`, `test_unavailable_api_does_not_escape_workflow_or_verify`.
+
+- `tests/test_checklist.py`: Updated workflow ownership/structure rules, happy-path confirmation action, waiting task and shared flow setup; added volunteered/correction/timeout sequences. Existing names: `flow`, `happy_path`, `test_completed_handler_waits_without_restarting`, `test_happy_path_check_action_sequence`, `test_source_boundaries_and_completion_inventory`.
+
+- `tests/test_claim_intake.py`: Moved review/submit/date names; state-backed facts and start signatures; optional blank-date semantics; correction snapshots and uncertain-status expectations; FakeBridge supports recorded_facts info. Existing names: `FakeBridge`, `registered`, `test_start_offers_only_this_policys_vehicles`, `test_occurred_at_rejects_future_with_fixed_now`, `test_single_vehicle_is_used_without_a_field`, `test_collection_and_review_completion_criteria`, `test_review_line_strips_trailing_periods_and_spaces`, `test_occurred_at_validation`, `test_review_speaks_every_field_without_claiming_submission`, `test_no_explicit_approval_does_not_submit`, `test_approve_submits_once_with_current_review_and_real_number`, `test_missing_or_changed_review_cannot_submit`, `test_unverified_state_cannot_submit`, `test_submission_failure_never_announces_claim`, `test_submitted_call_closes_once_only_when_done`.
+
+- `tests/test_coordinator.py`: Identity optional-field inventory and required get_session_id read in on_verified; new volunteered-request and uncertainty question tests added. Existing names: `test_call_starts_in_verification`, `test_verified_policy_context_precedes_request_task`.
+
+- `tests/test_golden_evals.py`: Updated scenarios, occurrence-aware gated driver and automatic identity confirmation; read-back excluded from repeated identity-question counts. Not run. Existing names: `Scenario`, `test_golden`, `run_scenario`.
+
+- `tests/test_guava_adapter.py`: Moved identity start/task names, dispatched confirmation, expected first mismatch retry, and updated exact validator failure wording. Existing names: `test_policy_callbacks_normalize_through_sdk_dispatch`, `test_policy_validation_failure_retries_without_completion`.
+
+- `tests/test_policy_lookup.py`: Moved matching/identity names, confirmation and retry-limit setup, optional fields, prescribed validator wording and mismatch Say line. Existing names: `test_live_policy_number_validation`, `test_live_identity_matching`, `test_registered_completion_branches_and_fields`.
+
+- `tests/test_policy_lookup_offline.py`: Moved identity and matching ownership, FakeBridge Say support, confirmed/limited retry setup, optional identity fields and completion logger ownership. Existing names: `FakeBridge`, `register`, `test_verification_with_fake_bridge`, `test_api_failures_do_not_verify`, `test_outcome_logs_exclude_caller_values`, `test_name_allows_small_differences`, `test_different_name_does_not_match`, `test_phone_allows_formatting_only`, `test_verification_uses_sensitive_digit_sequence_phone`, `test_phone_digits_must_match`.
+
+- `tests/test_single_path.py`: Inserted confirm-identity and bounded retries, delayed request_type until verification, tracked recorded_facts add_info, allowed explicitly cleared action names with bounded counts, and seeded pure evaluators with facts/confirmation. Existing names: `run_call`, `test_every_decision_selects_one_path`, `test_evaluators_are_repeatable_without_actions`.
+
+- `tests/test_call_paths.py`: deleted in full as explicitly requested; all its agent_sim scenarios retired in favor of golden scenarios.
+- Mock API `test_app.py`: existing tests unchanged; added `test_claim_by_reference_found_and_isolated` and `test_claim_by_reference_missing`.
+
+Blockers at completion: none. The declared limitations above remain outside this implementation.
+
+End: 2026-11-02 15:23:27 PST (date command; elapsed interval includes clarification pauses).

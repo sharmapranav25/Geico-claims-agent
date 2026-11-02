@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .workflows import assistance, claim_intake, policy_lookup
+from .workflows import assistance, claim_intake, identity, review_claim, submit_claim
 
 logger = logging.getLogger(__name__)
 PASS = object()   # The check is satisfied; continue to the next one.
@@ -28,25 +28,25 @@ class Check:
 
 
 def check_safety(call, state, bridge, routes):
-    
+    # Built in Prompt 3.
     return PASS
 
 
 def check_communication(call, state, bridge, routes):
-    
+    # Built in Prompt 3.
     return PASS
 
 
 def check_one_task(call, state, bridge, routes):
-    
+    # Built in Prompt 3.
     return PASS
 
 
 def check_intent_and_role(call, state, bridge, routes):
-    from .coordinator import REQUEST_TASK_ID
+    from .coordinator import REQUEST_TASK_ID, REPORT_OWN_LOSS
     if state.verified_profile is None or state.result('announce_verification') is None:
         return PASS
-    return PASS if state.done(REQUEST_TASK_ID) else None
+    return PASS if state.done(REQUEST_TASK_ID) or state.fact('request_type') == REPORT_OWN_LOSS else None
 
 
 def check_scope(call, state, bridge, routes):
@@ -70,13 +70,13 @@ def check_verification(call, state, bridge, routes):
     from .coordinator import next_start_action
     if state.verified_profile is not None:
         return PASS
-    if not state.done(policy_lookup.TASK_ID):
-        return None if state.completed_tasks else next_start_action(call, state, bridge)
-    return policy_lookup.next_action(call, state, bridge, routes.on_verified, routes.on_unavailable)
+    if not state.done(identity.TASK_ID):
+        return None if state.completed_tasks or state.result('identity_retry') is not None else next_start_action(call, state, bridge)
+    return identity.next_action(call, state, bridge, routes.on_verified, routes.on_unavailable)
 
 
 def check_required_information(call, state, bridge, routes):
-    if state.done(claim_intake.REVIEW_TASK_ID) or state.result('start_review') is not None:
+    if state.done(review_claim.REVIEW_TASK_ID) or state.result('start_review') is not None:
         return PASS
     if not state.done(claim_intake.TASK_ID):
         return None
@@ -85,26 +85,26 @@ def check_required_information(call, state, bridge, routes):
 
 
 def check_consistency(call, state, bridge, routes):
-    return PASS if state.done(claim_intake.REVIEW_TASK_ID) else None
+    return PASS if state.done(review_claim.REVIEW_TASK_ID) else None
 
 
 def check_permission(call, state, bridge, routes):
     if state.result('submit_claim') is not None:
         return PASS
-    return claim_intake.next_submit_action(call, state, bridge, routes.on_unavailable)
+    return submit_claim.next_submit_action(call, state, bridge)
 
 
 def check_result(call, state, bridge, routes):
-    action = claim_intake.next_submit_action(call, state, bridge, routes.on_unavailable)
+    action = submit_claim.next_submit_action(call, state, bridge)
     if action is not None:
         return action
-    return PASS if state.result('submit_claim').ok else None
+    return PASS if submit_claim.submitted_claim(state) is not None else None
 
 
 def check_close(call, state, bridge, routes):
-    if not state.done(claim_intake.SUBMITTED_TASK_ID):
+    if not state.done(submit_claim.SUBMITTED_TASK_ID):
         return None
-    return claim_intake.next_close_action(call, state, bridge)
+    return submit_claim.next_close_action(call, state, bridge)
 
 
 CHECKS = (
