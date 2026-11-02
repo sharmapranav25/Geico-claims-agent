@@ -39,7 +39,7 @@ def test_bridge_registers_question_handler(adapter):
 
 def test_bridge_adds_info(adapter):
     call = Mock()
-    info = {'policy_number': 'GEC-0001'}
+    info = {'policy_number': '1001'}
     adapter.SDK_BRIDGE.add_info(call, 'verified_policy', info)
     call.add_info.assert_called_once_with('verified_policy', info)
 
@@ -171,9 +171,9 @@ def test_bridge_registers_validation_and_completion(adapter):
     completed.assert_called_once_with(call)
 
 
-@pytest.mark.parametrize('number', ['GEC0001', 'GEC 0001', 'gec-0001', 'G-E-C-0001', 'GEC-0001'])
+@pytest.mark.parametrize('number', ['1001', '10 01', '10-01', ' 1001 '])
 @pytest.mark.parametrize('name,task', [
-    ('Avery Morgan', 'confirm-request'),
+    ('Michael Johnson', 'confirm-request'),
     ('Jordan Smith', 'policy-verification-mismatch'),
 ])
 def test_policy_callbacks_normalize_through_sdk_dispatch(adapter, monkeypatch, number, name, task):
@@ -185,7 +185,7 @@ def test_policy_callbacks_normalize_through_sdk_dispatch(adapter, monkeypatch, n
 
     client = Mock()
     client.get_policy.return_value = SimpleNamespace(
-        policy_number='GEC-0001', name='Avery Morgan', phone='628-268-8753',
+        policy_number='1001', name='Michael Johnson', phone='628-268-8753',
         vehicles=(SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry'),),
     )
     factory = Mock()
@@ -201,7 +201,7 @@ def test_policy_callbacks_normalize_through_sdk_dispatch(adapter, monkeypatch, n
     adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id=policy_lookup.TASK_ID))
 
     assert client.get_policy.call_count == 2
-    assert all(args.args == ('GEC-0001',) for args in client.get_policy.call_args_list)
+    assert all(args.args == ('1001',) for args in client.get_policy.call_args_list)
     assert call._command_queue[-1].task_id == task
 
 
@@ -220,7 +220,7 @@ def test_policy_validation_failure_retries_without_completion(adapter, monkeypat
     adapter.agent._on_task_complete_handlers[policy_lookup.TASK_ID] = completed
     call = MockCall()
     policy_lookup.start(call, adapter.SDK_BRIDGE)
-    call.set_field('policy_number', 'GEC-9999')
+    call.set_field('policy_number', '9999')
     call.set_field('caller_name', 'Jordan Smith')
     call.set_field('caller_phone', '555-555-0100')
     with patch.object(call, 'retry_task', wraps=call.retry_task) as retry:
@@ -229,7 +229,7 @@ def test_policy_validation_failure_retries_without_completion(adapter, monkeypat
     retry.assert_called_once()
     assert 'not found' in retry.call_args.kwargs['reason']
     completed.assert_not_called()
-    client.get_policy.assert_called_once_with('GEC-9999')
+    client.get_policy.assert_called_once_with('9999')
     assert len(call._command_queue) == 2
     assert 'Policy validation not found' in caplog.messages
 

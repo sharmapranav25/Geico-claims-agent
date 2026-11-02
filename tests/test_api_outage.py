@@ -17,7 +17,7 @@ from agent.call_state import InMemoryStateStore
 from agent.workflows import assistance, claim_intake, policy_lookup
 
 PROFILE = SimpleNamespace(
-    policy_number='GEC-0001', name='Avery Morgan', phone='628-268-8753',
+    policy_number='1001', name='Michael Johnson', phone='628-268-8753',
     vehicles=(SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry'),),
 )
 
@@ -33,8 +33,8 @@ def future_time():
 
 def call_fields():
     return {
-        'session_id': 'outage-session', 'policy_number': 'GEC 0001',
-        'caller_name': 'Avery Morgan', 'caller_phone': '628-268-8753',
+        'session_id': 'outage-session', 'policy_number': '10 01',
+        'caller_name': 'Michael Johnson', 'caller_phone': '628-268-8753',
         'request_type': coordinator.REPORT_OWN_LOSS, 'vehicle': '2021 Toyota Camry',
         'occurred_at': '2026-11-01T15:00:00-08:00', 'location': 'Main and 5th',
         'description': 'Rear-ended at a light.', 'loss_type': 'collision',

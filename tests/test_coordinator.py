@@ -53,7 +53,7 @@ def test_intent_a_never_restarts_a_task(adapter):
 
 def profile():
     vehicle = SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry')
-    return SimpleNamespace(policy_number='GEC-0001', name='Avery Morgan', phone='628-268-8753', vehicles=(vehicle,))
+    return SimpleNamespace(policy_number='1001', name='Michael Johnson', phone='628-268-8753', vehicles=(vehicle,))
 
 
 @pytest.mark.parametrize('stage,expected', [
@@ -78,7 +78,7 @@ def test_question_answers_only_from_state(adapter, stage, expected):
     assert adapter.agent._on_question(call, 'Has my claim been filed?') == answer
     assert call._command_queue == []
     if stage == 'unverified':
-        assert all(value not in answer for value in ('GEC-0001', 'Avery Morgan', '628-268-8753', 'Toyota', 'CLM-'))
+        assert all(value not in answer for value in ('1001', 'Michael Johnson', '628-268-8753', 'Toyota', 'CLM-'))
 
 
 def test_verified_policy_context_precedes_request_task(adapter):
@@ -87,7 +87,7 @@ def test_verified_policy_context_precedes_request_task(adapter):
     adapter.coordinator.on_verified(call, profile(), bridge)
     assert [entry[0] for entry in bridge.mock_calls] == ['add_info', 'set_task']
     bridge.add_info.assert_called_once_with(call, 'verified_policy', {
-        'policy_number': 'GEC-0001', 'policyholder': 'Avery Morgan', 'vehicles': ['2021 Toyota Camry'],
+        'policy_number': '1001', 'policyholder': 'Michael Johnson', 'vehicles': ['2021 Toyota Camry'],
     })
     assert '628-268-8753' not in repr(bridge.add_info.call_args)
     assert bridge.set_task.call_args.args == (call, adapter.coordinator.REQUEST_TASK_ID)
@@ -97,7 +97,7 @@ def test_verified_policy_context_precedes_request_task(adapter):
 def test_claim_cannot_start_without_verification(adapter):
     call = MockCall()
     call.set_field('request_type', adapter.coordinator.REPORT_OWN_LOSS)
-    adapter.coordinator.on_request_confirmed(call, adapter.SDK_BRIDGE)
+    adapter.coordinator.on_task_complete(call, adapter.coordinator.REQUEST_TASK_ID, adapter.SDK_BRIDGE)
     assert call._command_queue == []
 
 
@@ -108,7 +108,7 @@ def test_verified_caller_routes_on_recorded_request(adapter, request_type, task)
     adapter.coordinator.on_verified(call, profile(), adapter.SDK_BRIDGE)
     assert call._command_queue[-1].task_id == adapter.coordinator.REQUEST_TASK_ID
     call.set_field('request_type', request_type)
-    adapter.coordinator.on_request_confirmed(call, adapter.SDK_BRIDGE)
+    adapter.coordinator.on_task_complete(call, adapter.coordinator.REQUEST_TASK_ID, adapter.SDK_BRIDGE)
     assert call._command_queue[-1].task_id == task
 
 

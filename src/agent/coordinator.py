@@ -2,6 +2,7 @@
 
 from functools import partial
 
+from . import checklist
 from .action_loop import Action, advance
 from .bridge import CallBridge, FieldDefinition
 from .call_state import InMemoryStateStore
@@ -9,6 +10,7 @@ from .workflows import assistance, claim_intake, policy_lookup
 
 DEFAULT_PURPOSE = "Verify the caller's GEICO policy, then help them report an auto loss."
 REQUEST_TASK_ID = "confirm-request"
+COMPLETION_TASKS = (REQUEST_TASK_ID, *policy_lookup.TASK_IDS, *claim_intake.TASK_IDS, *assistance.TASK_IDS)
 REPORT_OWN_LOSS = "report_own_loss"
 OTHER_REQUEST = "other_request"
 # Shared guardrail appended to workflow objectives.
@@ -68,8 +70,30 @@ def next_start_action(call, state, bridge):
     return Action('start_assistance', 'guava', lambda: assistance.start(call, bridge))
 
 
+def default_routes(bridge):
+    return checklist.Routes(partial(on_verified, bridge=bridge), partial(assistance.start, bridge=bridge))
+
+
+def run_checklist(call, state, bridge, routes=None):
+    routes = routes or default_routes(bridge)
+    advance(state, lambda current: checklist.evaluate(call, current, bridge, routes))
+
+
 def start_call(call, bridge: CallBridge):
-    advance(state_for(call, bridge), lambda state: next_start_action(call, state, bridge))
+    run_checklist(call, state_for(call, bridge), bridge)
+
+
+def on_task_complete(call, task_id, bridge, get_state=None, routes=None):
+    state = get_state(call) if get_state is not None else state_for(call, bridge)
+    state.mark_done(task_id)
+    run_checklist(call, state, bridge, routes)
+
+
+def register_completions(agent, bridge, get_state=None, routes=None):
+    for task_id in COMPLETION_TASKS:
+        bridge.register_task_complete(agent, task_id, partial(
+            on_task_complete, task_id=task_id, bridge=bridge, get_state=get_state, routes=routes,
+        ))
 
 
 def on_verified(call, profile, bridge: CallBridge) -> None:
@@ -114,10 +138,6 @@ def next_request_action(call, state, bridge):
         )
 
     return Action('start_request', 'guava', start_request)
-
-
-def on_request_confirmed(call, bridge: CallBridge) -> None:
-    advance(state_for(call, bridge), lambda state: next_request_action(call, state, bridge))
 
 
 def on_intent_a(call) -> str:
@@ -174,13 +194,11 @@ def register(agent, bridge: CallBridge):
         "intent_b": partial(on_intent_b, bridge=bridge),
         "immediate_danger_or_other": partial(on_immediate_danger_or_other, bridge=bridge),
     })
-    get_state = partial(state_for, bridge=bridge)
     bridge.register_question(agent, partial(on_question, bridge=bridge))
-    on_unavailable = partial(assistance.start, bridge=bridge)
-    policy_lookup.register(agent, bridge, get_state, partial(on_verified, bridge=bridge), on_unavailable)
-    bridge.register_task_complete(agent, REQUEST_TASK_ID, partial(on_request_confirmed, bridge=bridge))
-    claim_intake.register(agent, bridge, get_state, on_unavailable)
-    assistance.register(agent, bridge, get_state)
+    policy_lookup.register(agent, bridge)
+    claim_intake.register(agent, bridge)
+    assistance.register(agent, bridge)
+    register_completions(agent, bridge)
 
 
 # Deferred: real Intent B and assistance workflows, on_escalate (no handoff),

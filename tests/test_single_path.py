@@ -29,7 +29,7 @@ def run_call(monkeypatch, options):
     api_up, policy_found, name_ok, phone_ok, request_type, save_ok, wants_rep, wants_callback, decision, submit_ok, needs_more_help = options
     bridge = FakeBridge()
     call = call_fields() | {
-        'caller_name': 'Avery Morgan' if name_ok else 'Jordan Smith',
+        'caller_name': 'Michael Johnson' if name_ok else 'Jordan Smith',
         'caller_phone': '628-268-8753' if phone_ok else '555-555-0100',
         'request_type': request_type, 'wants_representative': wants_rep, 'wants_callback': wants_callback,
         'submission_decision': decision, 'needs_more_help': needs_more_help,

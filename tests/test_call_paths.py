@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_TIMEOUT = 90
 EVENT_PREFIX = 'SIM_EVENT '
 FIRST_TURN = (
-    'I want to report a loss on my own policy. My policy number is GEC 0001. '
-    'Name is Avery Morgan. My phone number is 628-268-8753.'
+    'I want to report a loss on my own policy. My policy number is 10 01. '
+    'Name is Michael Johnson. My phone number is 628-268-8753.'
 )
 CLAIM_TURN = (
     'Someone rear-ended my 2021 Toyota Camry yesterday around 3pm at Main and 5th '
@@ -25,11 +25,11 @@ SCENARIOS = {
     'one_turn_verified': [FIRST_TURN],
     'claim_filled_once': [FIRST_TURN, CLAIM_TURN, "No, that's everything for now."],
     'wrong_identity': [
-        'I want to report a loss on my own policy. My policy number is GEC-0001. '
+        'I want to report a loss on my own policy. My policy number is 1001. '
         'Name is Jordan Smith. My phone number is 555-555-0100.',
     ],
     'unknown_policy': [
-        'I want to report a loss on my own policy. My policy number is GEC-9999. '
+        'I want to report a loss on my own policy. My policy number is 9999. '
         'Name is Jordan Smith. My phone number is 555-555-0100.',
     ],
     'detour_then_claim': [
@@ -37,7 +37,7 @@ SCENARIOS = {
         "I don't know my policy number.",
         'I need a tow truck.',
         'I want to return to the claim on my own policy. My policy number is '
-        'G-E-C0001. Name is Avery Morgan. My phone number is 628-268-8753.',
+        '10-01. Name is Michael Johnson. My phone number is 628-268-8753.',
     ],
 }
 
@@ -95,7 +95,7 @@ def test_call_path(scenario):
         assert 'policy-verification-mismatch' in tasks
         assert 'confirm-request' not in tasks
         agent_lines = '\n'.join(line for line in transcript.splitlines() if line.startswith('[agent]:'))
-        assert 'avery' not in agent_lines.casefold()
+        assert 'michael' not in agent_lines.casefold()
         assert '8753' not in agent_lines
     else:
         assert 'Policy validation not found' in outcomes
@@ -121,7 +121,7 @@ def run_scenario(scenario):
 
     try:
         with api_adapter.APIAdapter() as api:
-            api.get_policy('GEC-0001')
+            api.get_policy('1001')
     except (api_adapter.APIError, ValueError) as error:
         raise RuntimeError('agent_sim requires a reachable mock API at MOCK_API_URL') from error
 

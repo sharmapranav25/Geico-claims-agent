@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from agent import api_adapter
+from agent import api_adapter, checklist, coordinator
 from agent.call_state import CallState
 from agent.workflows import claim_intake
 
@@ -15,9 +15,9 @@ VEHICLES = (
     SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry'),
     SimpleNamespace(vehicle_id='V01-2', year=2022, make='Honda', model='Civic'),
 )
-PROFILE = SimpleNamespace(policy_number='GEC-0001', vehicles=VEHICLES)
+PROFILE = SimpleNamespace(policy_number='1001', vehicles=VEHICLES)
 FIELDS = {
-    'caller_name': 'Avery Morgan', 'caller_phone': '628-268-8753', 'vehicle': '2022 Honda Civic',
+    'caller_name': 'Michael Johnson', 'caller_phone': '628-268-8753', 'vehicle': '2022 Honda Civic',
     'occurred_at': '2026-11-01T15:00:00', 'location': 'Main and 5th',
     'description': 'Rear-ended at a light.', 'loss_type': 'collision',
 }
@@ -61,8 +61,10 @@ def registered(profile=PROFILE):
     bridge = FakeBridge()
     state = CallState('test-session', verified_profile=profile)
     bridge.state = state
-    claim_intake.register(object(), bridge, lambda call: state,
-                          lambda call: bridge.set_task(call, 'assistance-offer', ''))
+    claim_intake.register(object(), bridge)
+    coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(
+        Mock(), lambda call: bridge.set_task(call, 'assistance-offer', ''),
+    ))
     return bridge
 
 
@@ -123,7 +125,7 @@ def test_complete_saves_draft_with_chosen_vehicle_and_never_submits(api):
     bridge = registered()
     bridge.completions[claim_intake.TASK_ID](dict(FIELDS))
     policy_number, update = api.update_claim_draft.call_args.args
-    assert policy_number == 'GEC-0001'
+    assert policy_number == '1001'
     assert update.vehicle_id == 'V01-2'
     assert update.caller_role == 'policyholder'
     assert update.occurred_at.tzinfo is not None

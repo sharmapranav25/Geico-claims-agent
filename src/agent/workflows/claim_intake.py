@@ -5,7 +5,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from .. import api_adapter
-from ..action_loop import Action, advance
+from ..action_loop import Action
 from ..bridge import CallBridge, FieldDefinition
 
 logger = logging.getLogger(__name__)
@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 TASK_ID = "collect-claim"
 REVIEW_TASK_ID = "review-claim"
 SUBMITTED_TASK_ID = "claim-submitted"
+TASK_IDS = (TASK_ID, REVIEW_TASK_ID, SUBMITTED_TASK_ID)
 CLAIM_FIELDS = ("vehicle", "occurred_at", "location", "description", "loss_type")
 PORTAL_LINE = "You can upload supporting photos and documents later through your GEICO claims portal."
 LOSS_TYPES = ("collision", "theft", "weather", "other")
@@ -242,20 +243,8 @@ def next_close_action(call, state, bridge):
     )))
 
 
-def register(agent, bridge: CallBridge, get_state, on_unavailable):
+def register(agent, bridge: CallBridge):
     def on_validate_occurred_at(call, value):
         return validate_occurred_at(value)
 
-    def on_claim_complete(call):
-        advance(get_state(call), lambda state: next_action(call, state, bridge, on_unavailable))
-
-    def on_review_complete(call):
-        advance(get_state(call), lambda state: next_submit_action(call, state, bridge, on_unavailable))
-
-    def on_submitted_complete(call):
-        advance(get_state(call), lambda state: next_close_action(call, state, bridge))
-
     bridge.register_validator(agent, "occurred_at", on_validate_occurred_at)
-    bridge.register_task_complete(agent, TASK_ID, on_claim_complete)
-    bridge.register_task_complete(agent, REVIEW_TASK_ID, on_review_complete)
-    bridge.register_task_complete(agent, SUBMITTED_TASK_ID, on_submitted_complete)

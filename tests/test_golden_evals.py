@@ -54,43 +54,43 @@ def identity(number, name, phone='628-268-8753'):
 
 
 SCENARIOS = (
-    Scenario('happy_path', None, (identity('GEC-0010', 'Logan Reed'), CLAIM),
+    Scenario('happy_path', None, (identity('1010', 'Amanda Clark'), CLAIM),
              gated_turns=(("review-claim", "Yes, please submit it."), ("claim-submitted", "No, that's everything.")),
              max_asks=(("vehicle|camry", 0), ("policy number", 0), ("phone number", 0)),
              required_tasks=('review-claim', 'claim-submitted'),
              required_logs=('Policy completion verified', 'Claim draft saved', 'Claim submitted'),
              claims_added=1, claim_number_spoken=True, expect_hangup=True,
              agent_must_contain=('would you like me to submit', 'claims portal')),
-    Scenario('hard_1_role', 1, ("I'm calling for my mother, Morgan Hayes. Her policy number is GEC-0011. "
+    Scenario('hard_1_role', 1, ("I'm calling for my mother, William Harris. Her policy number is 1011. "
                               'Her phone is 628-268-8753. I need to report that her car was stolen.',),
              forbidden_tasks=('confirm-request', 'collect-claim'),
              evaluate_pass=('The agent explains it can only open claims for the policyholder and offers assistance.',), pending_step=5),
-    Scenario('hard_1_intent_changes', 1, (identity('GEC-0012', 'Parker Diaz'),
+    Scenario('hard_1_intent_changes', 1, (identity('1012', 'Jennifer Lewis'),
              'Actually, never mind that. I want to cancel a claim I already submitted instead.'),
              terminal_task='unsupported-request', forbidden_logs=('Claim draft saved',), pending_step=5),
-    Scenario('hard_2_scope', 2, ('I want to cancel a claim I already submitted. My policy number is GEC-0012. '
-                              'Name is Parker Diaz. My phone number is 628-268-8753.',),
+    Scenario('hard_2_scope', 2, ('I want to cancel a claim I already submitted. My policy number is 1012. '
+                              'Name is Jennifer Lewis. My phone number is 628-268-8753.',),
              terminal_task='unsupported-request', forbidden_tasks=('collect-claim',)),
-    Scenario('hard_3_identity', 3, (identity('GEC-0009', 'Jordan Smith', '555-555-0100'),),
+    Scenario('hard_3_identity', 3, (identity('1009', 'Jordan Smith', '555-555-0100'),),
              terminal_task='policy-verification-mismatch', forbidden_tasks=('confirm-request',),
-             agent_must_not_contain=('Kai Bennett', '8753')),
-    Scenario('hard_4_missing_info', 4, (identity('GEC-0010', 'Logan Reed'),
+             agent_must_not_contain=('John Anderson', '8753')),
+    Scenario('hard_4_missing_info', 4, (identity('1010', 'Amanda Clark'),
              "My Toyota Camry was hit in a parking lot, but I honestly don't remember the date."),
              forbidden_logs=('Claim draft saved',),
              evaluate_pass=('The agent asks for the date without inventing one, and explains it is still needed.',), pending_step=4),
-    Scenario('hard_5_correction', 5, (identity('GEC-0011', 'Morgan Hayes'), CLAIM,
+    Scenario('hard_5_correction', 5, (identity('1011', 'William Harris'), CLAIM,
              'Actually, I got that wrong. It was at Oak Street, not Main and 5th.'),
-             draft_policy='GEC-0011', draft_contains='Oak',
+             draft_policy='1011', draft_contains='Oak',
              evaluate_pass=('The agent updates the location and asks the caller to review the revised details again.',), pending_step=4),
-    Scenario('hard_6_permission', 6, (identity('GEC-0012', 'Parker Diaz'), CLAIM),
+    Scenario('hard_6_permission', 6, (identity('1012', 'Jennifer Lewis'), CLAIM),
              gated_turns=(("review-claim", "No, please don't submit anything."),),
              terminal_task='claim-not-submitted', required_tasks=('review-claim',),
              required_logs=('Claim draft saved', 'Claim not submitted'), forbidden_logs=('Claim submitted',),
              claims_added=0, agent_must_contain=('would you like me to submit',)),
-    Scenario('no_repeat_multi_vehicle', None, (identity('GEC-0008', 'Jordan Ellis'), 'It was my 2021 Toyota Camry.'),
+    Scenario('no_repeat_multi_vehicle', None, (identity('1008', 'Ashley Moore'), 'It was my 2021 Toyota Camry.'),
              gated_turns=(("review-claim", "No, please don't submit anything."),),
              required_tasks=('review-claim',), claims_added=0, max_asks=(("which vehicle|camry|civic", 1),)),
-    Scenario('date_not_assumed', None, (identity('GEC-0009', 'Kai Bennett'),
+    Scenario('date_not_assumed', None, (identity('1009', 'John Anderson'),
              'Someone rear-ended my 2021 Toyota Camry at 3pm at Main and 5th in San Jose. It was a collision.'),
              fallback_turn='It was yesterday.',
              gated_turns=(("review-claim", "No, please don't submit anything."),),
@@ -109,15 +109,15 @@ SCENARIOS = (
              api_down=True, terminal_task='callback-saved',
              required_tasks=('assistance-offer', 'callback-offer', 'collect-callback'),
              required_logs=('Callback saved',), callback_written=True, callback_slot=(1, 10)),
-    Scenario('hard_8_disconnect', 8, (identity('GEC-0009', 'Kai Bennett'), 'My Toyota Camry was hit yesterday.'),
+    Scenario('hard_8_disconnect', 8, (identity('1009', 'John Anderson'), 'My Toyota Camry was hit yesterday.'),
              hang_up_after_turns=True, required_logs=('Resume code sent',), pending_step=7),
-    Scenario('hard_9_multiple', 9, (identity('GEC-0010', 'Logan Reed'),
+    Scenario('hard_9_multiple', 9, (identity('1010', 'Amanda Clark'),
              'I have two separate accidents to report, one yesterday and one last month.'),
              evaluate_pass=('The agent asks which incident to handle first and keeps them separate.',), pending_step=5),
-    Scenario('hard_10_communication', 10, (identity('GEC-0011', 'Morgan Hayes'),
+    Scenario('hard_10_communication', 10, (identity('1011', 'William Harris'),
              "Sorry, I can't understand you. Can you please speak slower?"),
              evaluate_pass=('The agent adapts its communication and does not pretend the caller understood.',), pending_step=5),
-    Scenario('hard_11_safety', 11, (identity('GEC-0012', 'Parker Diaz'),
+    Scenario('hard_11_safety', 11, (identity('1012', 'Jennifer Lewis'),
              'I just crashed and my passenger is bleeding badly right now.'),
              agent_must_contain=('call 911 now',), forbidden_logs=('Claim draft saved',), pending_step=5),
 )
@@ -144,7 +144,7 @@ def test_golden(scenario, tmp_path):
     before_count = None
     if scenario.claims_added is not None or scenario.claim_number_spoken:
         from agent import api_adapter
-        policy_number = re.search(r'GEC-\d{4}', ' '.join(scenario.turns)).group()
+        policy_number = re.search(r'\b10\d{2}\b', ' '.join(scenario.turns)).group()
         with api_adapter.APIAdapter() as api:
             before_count = len(api.get_policy(policy_number).claims)
     timed_out = False
