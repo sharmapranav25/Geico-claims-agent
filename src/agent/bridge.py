@@ -13,9 +13,11 @@ Validator = Callable[[Any, Any], ValidationResult]
 class FieldDefinition:
     key: str
     description: str
-    field_type: Literal["text", "multiple_choice"] = "text"
+    field_type: Literal["text", "multiple_choice", "digit_sequence"] = "text"
     required: bool = True
     choices: Sequence[str] = ()
+    question: str = ""
+    sensitive: bool = False
 
 
 class CallBridge(Protocol):
@@ -23,9 +25,16 @@ class CallBridge(Protocol):
 
     def set_task(self, call: Any, task_id: str, objective: str,
                  todos: Sequence[tuple[str, str]] = (), *,
-                 fields: Sequence[FieldDefinition] = (), say: Sequence[str] = ()) -> None: ...
+                 fields: Sequence[FieldDefinition] = (), say: Sequence[str] = (),
+                 completion_criteria: str = "") -> None: ...
+
+    def add_info(self, call: Any, label: str, info: Any) -> None: ...
+
+    def register_question(self, agent: Any, handler: Callable[[Any, str], str]) -> None: ...
 
     def send_instruction(self, call: Any, instruction: str) -> None: ...
+
+    def end_call_success(self, call: Any) -> None: ...
 
     def get_field(self, call: Any, key: str) -> Any: ...
 

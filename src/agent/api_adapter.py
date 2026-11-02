@@ -100,6 +100,7 @@ class SubmittedClaim(ReadOnlyModel):
     loss: ClaimLoss
     claim_number: str
     submitted_at: AwareDatetime
+    submission_reference: str | None = None
 
 
 class Vehicle(ReadOnlyModel):
@@ -235,8 +236,9 @@ class APIAdapter:
             json=payload.model_dump(mode="json", exclude_unset=True),
         )
 
-    def submit_claim_draft(self, policy_number: str) -> SubmittedClaim:
+    def submit_claim_draft(self, policy_number: str, submission_reference: str | None = None) -> SubmittedClaim:
         # Submission and locking happen on the server; return only its result.
         return self._request(
             "POST", self._policy_path(policy_number) + "/claims/draft/submit", SubmittedClaim,
+            **({'json': {'submission_reference': submission_reference}} if submission_reference is not None else {}),
         )

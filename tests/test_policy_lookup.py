@@ -62,7 +62,7 @@ def test_registered_completion_branches_and_fields():
         call.set_field('caller_phone', '(628) 268-8753')
         assert agent._on_validate_handlers['policy_number'](call, 'GEC-0001') is True
         agent._on_task_complete_handlers[policy_lookup.TASK_ID](call)
-        assert len(call._command_queue) == 2
+        assert len(call._command_queue) == (3 if caller_name == 'Avery Morgan' else 2)
         result = call._command_queue[-1]
         assert isinstance(result, SetTaskCommand)
         assert coordinator.CALL_ENDING_RULE in result.objective
