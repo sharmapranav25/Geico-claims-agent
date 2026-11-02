@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 
 from .. import api_adapter
+from ..action_loop import Action, advance
 from ..bridge import CallBridge, FieldDefinition
 
 logger = logging.getLogger(__name__)
@@ -57,21 +58,43 @@ def start(call, bridge: CallBridge, profile):
     )
 
 
-def register(agent, bridge: CallBridge, get_profile):
-    def on_validate_occurred_at(call, value):
-        if parse_occurred_at(value) is None:
-            return False, "Ask the caller again when the loss happened, including the date and approximate time."
-        return True
+def _announce_saved(call, bridge):
+    from ..coordinator import CALL_ENDING_RULE
 
-    def on_claim_complete(call):
-        from ..coordinator import CALL_ENDING_RULE
+    logger.info('Claim draft saved')
+    bridge.set_task(call,
+        "claim-details-saved",
+        objective=(
+            "The loss details are saved as a draft. Tell the caller that. It is "
+            "not a submitted claim and has no claim number yet; reviewing and "
+            "submitting is not implemented, so do not claim to do it. " + CALL_ENDING_RULE
+        ),
+    )
 
-        profile = get_profile(call)
-        if profile is None:
-            return
-        chosen = bridge.get_field(call, "vehicle")
-        vehicle_id = next((v.vehicle_id for v in profile.vehicles if vehicle_label(v) == chosen), None)
-        try:
+
+def _announce_failed(call, bridge):
+    from ..coordinator import CALL_ENDING_RULE
+
+    logger.info('Claim draft save failed')
+    bridge.set_task(call,
+        "claim-save-failed",
+        objective=(
+            "The loss details could not be saved. Say so honestly. Do not "
+            "claim anything was saved or submitted, or that you can "
+            "transfer the caller. " + CALL_ENDING_RULE
+        ),
+    )
+
+
+def next_action(call, state, bridge):
+    if state.verified_profile is None:
+        return None
+    saved = state.result('save_draft')
+    if saved is None:
+        def save_draft():
+            profile = state.verified_profile
+            chosen = bridge.get_field(call, "vehicle")
+            vehicle_id = next((v.vehicle_id for v in profile.vehicles if vehicle_label(v) == chosen), None)
             update = api_adapter.ClaimDraftUpdate(
                 reporting_intent="A", caller_role="policyholder",
                 caller_name=bridge.get_field(call, "caller_name"),
@@ -83,27 +106,23 @@ def register(agent, bridge: CallBridge, get_profile):
                 loss_type=bridge.get_field(call, "loss_type"),
             )
             with api_adapter.APIAdapter() as api:
-                api.update_claim_draft(profile.policy_number, update)
-        except (api_adapter.APIError, ValueError):
-            logger.info('Claim draft save failed')
-            bridge.set_task(call,
-                "claim-save-failed",
-                objective=(
-                    "The loss details could not be saved. Say so honestly. Do not "
-                    "claim anything was saved or submitted, or that you can "
-                    "transfer the caller. " + CALL_ENDING_RULE
-                ),
-            )
-            return
-        logger.info('Claim draft saved')
-        bridge.set_task(call,
-            "claim-details-saved",
-            objective=(
-                "The loss details are saved as a draft. Tell the caller that. It is "
-                "not a submitted claim and has no claim number yet; reviewing and "
-                "submitting is not implemented, so do not claim to do it. " + CALL_ENDING_RULE
-            ),
-        )
+                return api.update_claim_draft(profile.policy_number, update)
+
+        return Action('save_draft', 'api', save_draft, (api_adapter.APIError, ValueError))
+    if state.result('announce_save') is not None:
+        return None
+    return Action('announce_save', 'guava',
+                  lambda: _announce_saved(call, bridge) if saved.ok else _announce_failed(call, bridge))
+
+
+def register(agent, bridge: CallBridge, get_state):
+    def on_validate_occurred_at(call, value):
+        if parse_occurred_at(value) is None:
+            return False, "Ask the caller again when the loss happened, including the date and approximate time."
+        return True
+
+    def on_claim_complete(call):
+        advance(get_state(call), lambda state: next_action(call, state, bridge))
 
     bridge.register_validator(agent, "occurred_at", on_validate_occurred_at)
     bridge.register_task_complete(agent, TASK_ID, on_claim_complete)

@@ -1,9 +1,10 @@
 """Call flow and deterministic gates: verify, confirm the request, fill the claim."""
 
 from functools import partial
-from weakref import WeakKeyDictionary
 
+from .action_loop import Action, advance
 from .bridge import CallBridge, FieldDefinition
+from .call_state import InMemoryStateStore
 from .workflows import claim_intake, policy_lookup
 
 DEFAULT_PURPOSE = "Verify the caller's GEICO policy, then help them report an auto loss."
@@ -46,16 +47,28 @@ INTENT_CHOICES = {
     ),
 }
 
-# Verified policy per active call; nothing past verification runs without it.
-_verified_profiles = WeakKeyDictionary()
+STORE = InMemoryStateStore()
+
+
+def state_for(call, bridge):
+    return STORE.get(bridge.get_session_id(call))
+
+
+def end_call(call, bridge):
+    STORE.delete(bridge.get_session_id(call))
+
+
+def next_start_action(call, state, bridge):
+    if state.result('start_verification') is not None:
+        return None
+    return Action('start_verification', 'guava', lambda: policy_lookup.start(call, bridge))
 
 
 def start_call(call, bridge: CallBridge):
-    policy_lookup.start(call, bridge)
+    advance(state_for(call, bridge), lambda state: next_start_action(call, state, bridge))
 
 
 def on_verified(call, profile, bridge: CallBridge) -> None:
-    _verified_profiles[call] = profile
     bridge.set_task(call,
         REQUEST_TASK_ID,
         objective=(
@@ -72,21 +85,30 @@ def on_verified(call, profile, bridge: CallBridge) -> None:
     )
 
 
+def next_request_action(call, state, bridge):
+    if state.verified_profile is None:
+        return None
+    if state.result('start_request') is not None:
+        return None
+
+    def start_request():
+        if bridge.get_field(call, "request_type") == REPORT_OWN_LOSS:
+            claim_intake.start(call, bridge, state.verified_profile)
+            return
+        bridge.set_task(call,
+            "unsupported-request",
+            objective=(
+                "This demo only opens new loss reports for verified policyholders. "
+                "Explain that limit, and guide them to the appropriate service without "
+                "inventing contact details or claiming to transfer them. " + CALL_ENDING_RULE
+            ),
+        )
+
+    return Action('start_request', 'guava', start_request)
+
+
 def on_request_confirmed(call, bridge: CallBridge) -> None:
-    profile = _verified_profiles.get(call)
-    if profile is None:
-        return
-    if bridge.get_field(call, "request_type") == REPORT_OWN_LOSS:
-        claim_intake.start(call, bridge, profile)
-        return
-    bridge.set_task(call,
-        "unsupported-request",
-        objective=(
-            "This demo only opens new loss reports for verified policyholders. "
-            "Explain that limit, and guide them to the appropriate service without "
-            "inventing contact details or claiming to transfer them. " + CALL_ENDING_RULE
-        ),
-    )
+    advance(state_for(call, bridge), lambda state: next_request_action(call, state, bridge))
 
 
 def on_intent_a(call) -> str:
@@ -127,9 +149,10 @@ def register(agent, bridge: CallBridge):
         "intent_b": partial(on_intent_b, bridge=bridge),
         "immediate_danger_or_other": partial(on_immediate_danger_or_other, bridge=bridge),
     })
-    policy_lookup.register(agent, bridge, partial(on_verified, bridge=bridge))
+    get_state = partial(state_for, bridge=bridge)
+    policy_lookup.register(agent, bridge, get_state, partial(on_verified, bridge=bridge))
     bridge.register_task_complete(agent, REQUEST_TASK_ID, partial(on_request_confirmed, bridge=bridge))
-    claim_intake.register(agent, bridge, _verified_profiles.get)
+    claim_intake.register(agent, bridge, get_state)
 
 
 # Deferred: real Intent B and assistance workflows, on_escalate (no handoff),

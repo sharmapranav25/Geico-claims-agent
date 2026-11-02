@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 from typing import Literal
 
 from .. import api_adapter
+from ..action_loop import Action, advance
 from ..bridge import CallBridge, FieldDefinition
 
 logger = logging.getLogger(__name__)
@@ -82,45 +83,67 @@ def start(call, bridge: CallBridge):
     )
 
 
-def register(agent, bridge: CallBridge, on_verified):
+def _announce_mismatch(call, bridge):
+    from ..coordinator import CALL_ENDING_RULE
+
+    logger.info('Policy completion mismatch')
+    bridge.set_task(call,
+        "policy-verification-mismatch",
+        objective=(
+            "Explain that the caller's identity could not be verified against "
+            "the policy. Do not reveal the name or phone on file. The demo "
+            "does not yet have a human-assistance handoff; do not claim to "
+            "transfer or escalate, or to create or submit a claim. " + CALL_ENDING_RULE
+        ),
+    )
+
+
+def _announce_unavailable(call, bridge):
+    from ..coordinator import CALL_ENDING_RULE
+
+    logger.info('Policy completion unavailable')
+    bridge.set_task(call,
+        "policy-verification-unavailable",
+        objective=(
+            "Policy verification could not be completed because the policy "
+            "could not be retrieved. Do not claim verification succeeded "
+            "or disclose policy details. This demo has no human-assistance "
+            "handoff yet; do not claim to transfer or escalate. " + CALL_ENDING_RULE
+        ),
+    )
+
+
+def next_action(call, state, bridge, on_verified):
+    lookup = state.result('fetch_policy')
+    if lookup is None:
+        def fetch_policy():
+            number = bridge.get_field(call, "policy_number")
+            with api_adapter.APIAdapter() as api:
+                return api.get_policy(normalize_policy_number(number) if isinstance(number, str) else "")
+
+        return Action('fetch_policy', 'api', fetch_policy, (api_adapter.APIError,))
+    if state.result('announce_verification') is not None:
+        return None
+    if not lookup.ok:
+        return Action('announce_verification', 'guava', lambda: _announce_unavailable(call, bridge))
+    if check_identity_match(lookup.data, bridge.get_field(call, "caller_name"), bridge.get_field(call, "caller_phone")):
+        state.verified_profile = lookup.data
+    if state.verified_profile is not None:
+        def announce_verified():
+            logger.info('Policy completion verified')
+            return on_verified(call, state.verified_profile)
+
+        return Action('announce_verification', 'guava', announce_verified)
+    return Action('announce_verification', 'guava', lambda: _announce_mismatch(call, bridge))
+
+
+def register(agent, bridge: CallBridge, get_state, on_verified):
     # Register at agent setup, not every time a caller enters the workflow.
     def on_validate_policy_number(call, value):
         return validate_policy_number(value)
 
     def on_policy_complete(call):
-        from ..coordinator import CALL_ENDING_RULE
-
-        # Read this call's fields and fetch a fresh profile before matching identity.
-        number = bridge.get_field(call, "policy_number")
-        try:
-            with api_adapter.APIAdapter() as api:
-                profile = api.get_policy(normalize_policy_number(number) if isinstance(number, str) else "")
-        except api_adapter.APIError:
-            logger.info('Policy completion unavailable')
-            bridge.set_task(call,
-                "policy-verification-unavailable",
-                objective=(
-                    "Policy verification could not be completed because the policy "
-                    "could not be retrieved. Do not claim verification succeeded "
-                    "or disclose policy details. This demo has no human-assistance "
-                    "handoff yet; do not claim to transfer or escalate. " + CALL_ENDING_RULE
-                ),
-            )
-            return
-        if check_identity_match(profile, bridge.get_field(call, "caller_name"), bridge.get_field(call, "caller_phone")):
-            logger.info('Policy completion verified')
-            on_verified(call, profile)
-        else:
-            logger.info('Policy completion mismatch')
-            bridge.set_task(call,
-                "policy-verification-mismatch",
-                objective=(
-                    "Explain that the caller's identity could not be verified against "
-                    "the policy. Do not reveal the name or phone on file. The demo "
-                    "does not yet have a human-assistance handoff; do not claim to "
-                    "transfer or escalate, or to create or submit a claim. " + CALL_ENDING_RULE
-                ),
-            )
+        advance(get_state(call), lambda state: next_action(call, state, bridge, on_verified))
 
     bridge.register_validator(agent, "policy_number", on_validate_policy_number)
     bridge.register_task_complete(agent, TASK_ID, on_policy_complete)

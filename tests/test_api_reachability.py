@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter
+from agent.call_state import CallState
 from agent.workflows import policy_lookup
 
 
@@ -152,7 +153,9 @@ def test_unavailable_api_does_not_escape_workflow_or_verify(unavailable_api):
         'policy_number': 'GEC-0001', 'caller_name': 'Avery Morgan',
         'caller_phone': '628-268-8753',
     }
-    policy_lookup.register(object(), bridge, on_verified=lambda call, profile: bridge.set_task(call, 'verified', ''))
+    state = CallState('test-session')
+    policy_lookup.register(object(), bridge, lambda call: state,
+                           on_verified=lambda call, profile: bridge.set_task(call, 'verified', ''))
     policy_lookup.start(call, bridge)
 
     # No injected exceptions: both registered callbacks use the real adapter.
