@@ -20,7 +20,9 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-m 'not agent_sim'"
+addopts = "-m 'not agent_sim and not golden'"
 markers = [
     "agent_sim: opt-in real-model Guava test sessions (requires API key and mock API)",
+    "golden: opt-in scripted real-model acceptance scenarios",
+    "golden_pending: acceptance paths assigned to a later sprint step",
 ]

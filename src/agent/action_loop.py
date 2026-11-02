@@ -14,7 +14,7 @@ MAX_ACTIONS = 10
 @dataclass(frozen=True)
 class Action:
     name: str
-    target: Literal['guava', 'api']
+    target: Literal['guava', 'api', 'local']
     run: Callable[[], Any]
     failure_types: tuple[type[Exception], ...] = ()
 

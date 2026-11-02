@@ -55,7 +55,8 @@ def api(monkeypatch):
 def registered(profile=PROFILE):
     bridge = FakeBridge()
     state = CallState('test-session', verified_profile=profile)
-    claim_intake.register(object(), bridge, lambda call: state)
+    claim_intake.register(object(), bridge, lambda call: state,
+                          lambda call: bridge.set_task(call, 'assistance-offer', ''))
     return bridge
 
 
@@ -88,7 +89,9 @@ def test_failed_save_is_not_reported_as_saved(api, error):
     api.update_claim_draft.side_effect = error
     bridge = registered()
     bridge.completions[claim_intake.TASK_ID](dict(FIELDS))
-    assert bridge.tasks[-1][0] == 'claim-save-failed'
+    expected = 'assistance-offer' if isinstance(error, api_adapter.APIUnavailableError) else 'claim-save-failed'
+    assert bridge.tasks[-1][0] == expected
+    assert all(task[0] != 'claim-details-saved' for task in bridge.tasks)
 
 
 def test_unverified_call_saves_nothing(api):

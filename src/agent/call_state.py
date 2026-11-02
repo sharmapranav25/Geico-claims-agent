@@ -8,7 +8,7 @@ from typing import Any, Literal, Protocol
 @dataclass(frozen=True)
 class ActionResult:
     name: str
-    target: Literal['guava', 'api']
+    target: Literal['guava', 'api', 'local']
     ok: bool
     data: Any = None
 

@@ -41,7 +41,8 @@ def validate_policy_number(policy_number: str) -> Literal[True] | tuple[Literal[
         return False, "That policy number was not found. Please ask the caller to check and repeat it."
     except api_adapter.APIError:
         logger.info('Policy validation unavailable')
-        return False, "The policy service could not confirm the number right now. Explain the service issue; do not say the policy is invalid."
+        # An outage is not a bad number. The completion lookup fails and routes to assistance.
+        return True
     logger.info('Policy validation passed')
     return True
 
@@ -98,22 +99,7 @@ def _announce_mismatch(call, bridge):
     )
 
 
-def _announce_unavailable(call, bridge):
-    from ..coordinator import CALL_ENDING_RULE
-
-    logger.info('Policy completion unavailable')
-    bridge.set_task(call,
-        "policy-verification-unavailable",
-        objective=(
-            "Policy verification could not be completed because the policy "
-            "could not be retrieved. Do not claim verification succeeded "
-            "or disclose policy details. This demo has no human-assistance "
-            "handoff yet; do not claim to transfer or escalate. " + CALL_ENDING_RULE
-        ),
-    )
-
-
-def next_action(call, state, bridge, on_verified):
+def next_action(call, state, bridge, on_verified, on_unavailable):
     lookup = state.result('fetch_policy')
     if lookup is None:
         def fetch_policy():
@@ -125,7 +111,11 @@ def next_action(call, state, bridge, on_verified):
     if state.result('announce_verification') is not None:
         return None
     if not lookup.ok:
-        return Action('announce_verification', 'guava', lambda: _announce_unavailable(call, bridge))
+        def announce_unavailable():
+            logger.info('Policy completion unavailable')
+            return on_unavailable(call)
+
+        return Action('announce_verification', 'guava', announce_unavailable)
     if check_identity_match(lookup.data, bridge.get_field(call, "caller_name"), bridge.get_field(call, "caller_phone")):
         state.verified_profile = lookup.data
     if state.verified_profile is not None:
@@ -137,13 +127,13 @@ def next_action(call, state, bridge, on_verified):
     return Action('announce_verification', 'guava', lambda: _announce_mismatch(call, bridge))
 
 
-def register(agent, bridge: CallBridge, get_state, on_verified):
+def register(agent, bridge: CallBridge, get_state, on_verified, on_unavailable):
     # Register at agent setup, not every time a caller enters the workflow.
     def on_validate_policy_number(call, value):
         return validate_policy_number(value)
 
     def on_policy_complete(call):
-        advance(get_state(call), lambda state: next_action(call, state, bridge, on_verified))
+        advance(get_state(call), lambda state: next_action(call, state, bridge, on_verified, on_unavailable))
 
     bridge.register_validator(agent, "policy_number", on_validate_policy_number)
     bridge.register_task_complete(agent, TASK_ID, on_policy_complete)

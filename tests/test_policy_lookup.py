@@ -1,7 +1,7 @@
 """Live policy verification plus offline SDK dispatch with real API reads."""
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import guava
 import pytest
@@ -45,7 +45,7 @@ def test_registered_completion_branches_and_fields():
         agent = guava.Agent(name='Test')
     bridge = SDKBridge()
     policy_lookup.register(agent, bridge, lambda call: CallState(call.id),
-                           lambda call, profile: coordinator.on_verified(call, profile, bridge))
+                           lambda call, profile: coordinator.on_verified(call, profile, bridge), Mock())
     assert set(agent._on_validate_handlers) == {'policy_number'}
     assert set(agent._on_task_complete_handlers) == {policy_lookup.TASK_ID}
     commands = []

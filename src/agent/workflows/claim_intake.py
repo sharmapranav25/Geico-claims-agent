@@ -86,7 +86,7 @@ def _announce_failed(call, bridge):
     )
 
 
-def next_action(call, state, bridge):
+def next_action(call, state, bridge, on_unavailable):
     if state.verified_profile is None:
         return None
     saved = state.result('save_draft')
@@ -111,18 +111,25 @@ def next_action(call, state, bridge):
         return Action('save_draft', 'api', save_draft, (api_adapter.APIError, ValueError))
     if state.result('announce_save') is not None:
         return None
-    return Action('announce_save', 'guava',
-                  lambda: _announce_saved(call, bridge) if saved.ok else _announce_failed(call, bridge))
+    def announce_save():
+        if saved.ok:
+            return _announce_saved(call, bridge)
+        if isinstance(saved.data, (api_adapter.APIUnavailableError, api_adapter.APIResponseError)):
+            logger.info('Claim draft save failed')
+            return on_unavailable(call)
+        return _announce_failed(call, bridge)
+
+    return Action('announce_save', 'guava', announce_save)
 
 
-def register(agent, bridge: CallBridge, get_state):
+def register(agent, bridge: CallBridge, get_state, on_unavailable):
     def on_validate_occurred_at(call, value):
         if parse_occurred_at(value) is None:
             return False, "Ask the caller again when the loss happened, including the date and approximate time."
         return True
 
     def on_claim_complete(call):
-        advance(get_state(call), lambda state: next_action(call, state, bridge))
+        advance(get_state(call), lambda state: next_action(call, state, bridge, on_unavailable))
 
     bridge.register_validator(agent, "occurred_at", on_validate_occurred_at)
     bridge.register_task_complete(agent, TASK_ID, on_claim_complete)
