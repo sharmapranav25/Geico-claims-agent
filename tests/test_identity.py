@@ -106,7 +106,7 @@ def test_fetch_outage_announces_once(flow):
 def test_volunteered_facts_survive_empty_retry(flow, time, expected):
     flow.call.update(request_type=coordinator.REPORT_OWN_LOSS, stated_time=time)
     complete(flow, identity.TASK_ID)
-    for key in ('request_type', 'description', 'location', 'loss_type'):
+    for key in ('request_type', 'description', 'location'):
         assert flow.state.fact(key) == flow.call[key]
     assert flow.state.fact('occurred_at') == expected
     assert flow.state.identity_retries == 0

@@ -13,6 +13,7 @@ TASK_IDS = (TASK_ID,)
 CLAIM_FIELDS = ('vehicle', 'occurred_at', 'location', 'description', 'loss_type')
 LOSS_TYPES = ('collision', 'theft', 'weather', 'other')
 REQUIRED_FACTS = ('vehicle', 'occurred_at', 'location', 'description')
+NOT_ON_POLICY = 'not on this policy'
 
 
 def vehicle_label(vehicle) -> str:
@@ -27,15 +28,16 @@ def start(call, bridge, state, say=()):
     from ..coordinator import CALL_ENDING_RULE, KEEP_CONTEXT_RULE
 
     profile = state.verified_profile
-    if len(profile.vehicles) == 1:
-        state.set_fact('vehicle', vehicle_label(profile.vehicles[0]))
+    labels = tuple(vehicle_label(vehicle) for vehicle in profile.vehicles)
     facts = claim_facts(state)
     bridge.add_info(call, 'recorded_facts', {key: value for key, value in facts.items() if value})
     skip = ' Ask for this. Skip it only if the caller says they cannot provide it.'
     fields = [
-        FieldDefinition('vehicle', 'Once the caller names a vehicle, record it immediately and do not ask again.',
-                        question='Which vehicle was involved?', field_type='multiple_choice',
-                        choices=tuple(vehicle_label(vehicle) for vehicle in profile.vehicles)),
+        FieldDefinition('vehicle', 'The vehicle involved must match a choice exactly, including the year, make and model. Never assume. '
+                        'If the caller names anything different, tell them right away what this policy shows and ask which they mean, before asking anything else. '
+                        f"Record '{NOT_ON_POLICY}' if they confirm it is none of them.",
+                        question=f'I see your {labels[0]} on this policy. Was that the vehicle involved?' if len(labels) == 1 else 'Which vehicle was involved?',
+                        field_type='multiple_choice', choices=(*labels, NOT_ON_POLICY)),
         FieldDefinition('occurred_at', f'The date and time the loss happened. {speech.date_context()} '
                         'If the caller gives only a time or only a day, ask for the missing part. Never assume a date. '
                         'Record it as ISO 8601, like 2026-10-31T15:00:00.' + skip,
@@ -44,8 +46,6 @@ def start(call, bridge, state, say=()):
         FieldDefinition('description', "Everything the caller said about what happened, combined. Keep earlier details when they add more. "
                         "Record what happened in the caller's own words, for example 'my mother', not 'the caller's mother'." + skip,
                         question='What happened?', required=False),
-        FieldDefinition('loss_type', 'The kind of loss.', question='What kind of loss was it: collision, theft, weather or other?',
-                        field_type='multiple_choice', choices=LOSS_TYPES, required=False),
     ]
     fields = [field for field in fields if not facts[field.key]]
     keep_description = bool(fields and facts['description'])
@@ -94,11 +94,12 @@ def capture_live(call, state, bridge):
 def capture(call, state, bridge):
     for key in CLAIM_FIELDS:
         value = bridge.get_field(call, key)
-        if value is not None and str(value).strip():
+        if value is not None and str(value).strip() and value != NOT_ON_POLICY:
             state.set_fact(key, value)
     field, value = bridge.get_field(call, 'corrected_field'), bridge.get_field(call, 'corrected_value')
     labels = tuple(vehicle_label(vehicle) for vehicle in state.verified_profile.vehicles) if state.verified_profile else ()
     if field and value and verification.correction_is_valid(field, value, labels, LOSS_TYPES):
+        state.loss_type_corrected = state.loss_type_corrected or field == 'loss_type'
         state.set_fact(field, value)
         logger.info('Claim fact corrected')
 
@@ -110,6 +111,7 @@ def apply_correction(state, field, value):
     labels = tuple(vehicle_label(vehicle) for vehicle in state.verified_profile.vehicles)
     if verification.correction_is_valid(field, value, labels, LOSS_TYPES):
         logger.info('Claim fact corrected')
+        state.loss_type_corrected = state.loss_type_corrected or field == 'loss_type'
         state.set_fact(field, value)
         state.clear_results('save_draft', 'start_review', 'announce_save', 'write_summary', 'final_consistency')
         state.closeout_generation += 1
@@ -139,8 +141,13 @@ def apply_addition(state, value):
     state.clear_done(review_claim.REVIEW_TASK_ID)
 
 
-def store_summary(state, summary):
+def store_summary(state, summary, loss_type=None, report=None):
     state.set_fact('incident_summary', summary)
+    # The read-back speaks to the caller; the claim file holds the third-person report.
+    state.set_fact('incident_report', report)
+    # The model proposes the loss type and the read-back asks the caller; a caller's correction stands.
+    if loss_type and not state.loss_type_corrected:
+        state.set_fact('loss_type', loss_type)
 
 
 def _announce_failed(call, bridge, state):

@@ -71,7 +71,7 @@ def _start_live(call, state, bridge):
 def capture(call, state, bridge):
     state.clear_results('start_confirm', 'identity_retry', 'fetch_policy', 'announce_verification')
     state.clear_done(CONFIRM_TASK_ID)
-    for key in ('policy_number', 'caller_name', 'caller_phone', 'request_type', 'description', 'location', 'loss_type'):
+    for key in ('policy_number', 'caller_name', 'caller_phone', 'request_type', 'description', 'location'):
         value = bridge.get_field(call, key)
         if value is not None and str(value).strip():
             state.set_fact(key, policy_lookup.normalize_policy_number(value) if key == 'policy_number' else value)

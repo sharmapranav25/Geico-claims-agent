@@ -12,7 +12,7 @@ def safe_generate(prompt, json_schema):
     keys = json_schema['properties']
     if 'summary' in keys:
         description = json.loads(prompt.split('\n')[-1]).get('description')
-        return json.dumps({'summary': description or 'An incident was reported.'})
+        return json.dumps({'summary': description or 'An incident was reported.', 'report': description or 'An incident was reported.', 'loss_type': 'collision'})
     if 'role' in keys:
         return json.dumps({'danger': False, 'role': 'unverified', 'multiple_incidents': False, 'inconsistent': False})
     if 'fields' in keys:

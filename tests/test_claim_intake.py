@@ -84,7 +84,7 @@ def test_start_offers_only_this_policys_vehicles():
     task_id, _, fields = bridge.tasks[0]
     assert task_id == claim_intake.TASK_ID
     vehicle = next(field for field in fields if field.key == 'vehicle')
-    assert vehicle.choices == ('2021 Toyota Camry', '2022 Honda Civic')
+    assert vehicle.choices == ('2021 Toyota Camry', '2022 Honda Civic', claim_intake.NOT_ON_POLICY)
     assert vehicle.question == 'Which vehicle was involved?'
 
 
@@ -98,14 +98,15 @@ def test_occurred_at_rejects_future_with_fixed_now():
     assert 'has not happened yet' in reason
 
 
-def test_single_vehicle_is_used_without_a_field(api):
+def test_single_vehicle_is_confirmed_with_the_caller(api):
     profile = SimpleNamespace(policy_number=PROFILE.policy_number, vehicles=VEHICLES[:1])
     bridge = registered(profile)
-    call = {key: value for key, value in FIELDS.items() if key != 'vehicle'}
+    call = dict(FIELDS, vehicle='2021 Toyota Camry')
     claim_intake.start(call, bridge, bridge.state)
-    _, objective, fields = bridge.tasks[-1]
-    assert 'vehicle' not in {field.key for field in fields}
-    assert bridge.state.fact('vehicle') == '2021 Toyota Camry'
+    vehicle = next(field for field in bridge.tasks[-1][2] if field.key == 'vehicle')
+    assert vehicle.question == 'I see your 2021 Toyota Camry on this policy. Was that the vehicle involved?'
+    assert vehicle.choices == ('2021 Toyota Camry', claim_intake.NOT_ON_POLICY)
+    assert bridge.state.fact('vehicle') is None
     bridge.completions[claim_intake.TASK_ID](call)
     assert api.update_claim_draft.call_args.args[1].vehicle_id == 'V01-1'
     assert '2021 Toyota Camry' in bridge.say[-1][0]
@@ -312,7 +313,7 @@ def test_skipped_required_fact_never_saves(api, missing):
     api.submit_claim_draft.assert_not_called()
 
 
-def test_optional_loss_type_stays_none(api):
+def test_failed_classification_leaves_loss_type_none(api):
     bridge = registered()
     bridge.generate = Mock(side_effect=RuntimeError('offline'))
     call = dict(FIELDS)
