@@ -55,6 +55,7 @@ class FakeBridge:
         self.completions = {}
         self.actions = {}
         self.hang_up = Mock(side_effect=lambda call, line: self.instructions.append(line))
+        self.read_script = Mock()
 
     def set_task(self, call, task_id, objective, todos=(), *, fields=(), say=(), completion_criteria=""):
         self.tasks.append(SimpleNamespace(task_id=task_id, objective=objective, fields=fields, say=say, completion_criteria=completion_criteria))

@@ -14,7 +14,7 @@ from agent.workflows import assistance, claim_intake, endings, identity, review_
 from supervisor_helpers import after_safety, safe_generate, wait_closeout
 from test_api_outage import FakeBridge, PROFILE, call_fields, adapter
 
-SAFE = {'danger': False, 'role': 'unverified', 'multiple_incidents': False, 'inconsistent': False}
+SAFE = {'danger': False, 'role': 'unverified', 'multiple_incidents': False, 'inconsistent': False, 'wants_human': False}
 
 
 def until(check):
@@ -122,7 +122,7 @@ def test_root_classification_routes_fake_answers(flow, text, answer, stopped, bl
     assert flow.state.stopped is stopped
     assert flow.state.claim_blocked is blocked
     if blocked:
-        assert flow.bridge.tasks[-1].say == [checklist.ROLE_LINE]
+        flow.bridge.read_script.assert_called_once_with(flow.call, checklist.ROLE_LINE)
     flow.client.submit_claim_draft.assert_not_called()
     prompt = flow.bridge.generate.call_args.args[0]
     assert 'A family member involved' in prompt and 'past injury' in prompt

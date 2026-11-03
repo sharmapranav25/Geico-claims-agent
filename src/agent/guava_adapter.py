@@ -57,6 +57,10 @@ class SDKBridge(CallBridge):
         agent.on_question(handler)
 
     @staticmethod
+    def read_script(call, line):
+        call.read_script(line)
+
+    @staticmethod
     def hang_up(call, final_line):
         call.hangup(final_instructions=f'Say exactly: "{final_line}"')
 

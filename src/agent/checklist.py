@@ -31,6 +31,7 @@ class Check:
 
 
 ROLE_LINE = "I can only open a claim for the policyholder on this call, but I can have a person call you back. Would you like that?"
+HUMAN_LINE = "I can't transfer you to a person on this call, but I can have someone call you back. Would you like that?"
 
 
 def check_danger(call, state, bridge, routes):
@@ -45,19 +46,28 @@ def check_danger(call, state, bridge, routes):
 def check_role(call, state, bridge, routes):
     from .coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
 
-    if state.signals.get('someone_else') and submit_claim.submitted_claim(state) is None and not submit_claim.submission_uncertain(state):
+    if (state.signals.get('someone_else') or state.signals.get('human')) and submit_claim.submitted_claim(state) is None and not submit_claim.submission_uncertain(state):
         if not state.claim_blocked:
             state.claim_blocked = True
             state.verified_profile = None
             state.approved_fields = None
             state.review_decision = None
             state.open_task = assistance.CALLBACK_OFFER_TASK_ID
-            return Action('role_callback_offer', 'guava', lambda: bridge.set_task(call,
-                assistance.CALLBACK_OFFER_TASK_ID, say=[ROLE_LINE],
+            # Hangup is only an instruction, so a caller still asking is answered even after an ending began.
+            state.ending = None
+            state.clear_results('hang_up', 'ending_more')
+            def offer_callback():
+                # Word for word and at once: a task's own line can lose to what the model was already saying.
+                bridge.read_script(call, ROLE_LINE if state.signals.get('someone_else') else HUMAN_LINE)
+                bridge.set_task(call, assistance.CALLBACK_OFFER_TASK_ID,
                 fields=[FieldDefinition('wants_callback', 'Whether the caller wants a callback. Giving a callback time counts as yes.',
                                         field_type='multiple_choice', choices=('yes', 'no'))],
-                objective='Record whether the caller wants a callback. Do not collect policy or claim details or disclose protected information. '
-                          'Never say a callback is noted or saved before the application confirms it. ' + KEEP_CONTEXT_RULE + CALL_ENDING_RULE))
+                objective='The caller was just told the limit of this call and asked whether they want a callback. Do not repeat that, and never say you can transfer or connect them. '
+                          'Record their answer. Do not collect policy or claim details or disclose protected information. '
+                          'Never say a callback is noted or saved before the application confirms it. ' + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)
+            return Action('role_callback_offer', 'guava', offer_callback)
+        if state.ending:
+            return PASS
         if state.done(assistance.CALLBACK_TASK_ID):
             return assistance.next_callback_action(call, state, bridge)
         if state.done(assistance.CALLBACK_OFFER_TASK_ID):
@@ -137,9 +147,9 @@ def check_close(call, state, bridge, routes):
 
 CHECKS = (
     Check('1', 'Danger', check_danger),
+    Check('2', 'Intent or role', check_role),
     Check('ending', 'Acknowledge the outcome and close',
           lambda call, state, bridge, routes: endings.next_action(call, state, bridge) if state.ending else PASS),
-    Check('2', 'Intent or role', check_role),
     Check('3', 'Within supported scope', check_scope),
     Check('4', 'Conflicts and multiple incidents', check_nudges),
     Check('5', 'Required verification', check_verification),

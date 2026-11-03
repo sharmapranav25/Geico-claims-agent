@@ -17,7 +17,7 @@ from supervisor_helpers import wait_closeout
 
 
 EXPECTED_CHECKS = [
-    ('1', 'Danger'), ('ending', 'Acknowledge the outcome and close'), ('2', 'Intent or role'),
+    ('1', 'Danger'), ('2', 'Intent or role'), ('ending', 'Acknowledge the outcome and close'),
     ('3', 'Within supported scope'), ('4', 'Conflicts and multiple incidents'), ('5', 'Required verification'),
     ('6', 'Required information'), ('7', 'Consistent information'), ('8', 'Permission given'),
     ('9', 'Clear successful result'), ('10', 'Explain the result and close'),

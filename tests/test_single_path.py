@@ -277,7 +277,7 @@ def test_intent_b_does_not_replace_active_task(callback_path, stage):
         state.verified_profile = PROFILE
     else:
         state.record(ActionResult('start_assistance', 'guava', True))
-    assert bridge.actions['intent_b'](call) == coordinator.on_intent_a(call)
+    assert bridge.actions['intent_b'](call) == coordinator.on_intent_a(call, bridge)
     assert bridge.tasks == bridge.instructions == bridge.infos == []
 
 
