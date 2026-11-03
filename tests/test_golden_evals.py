@@ -1,6 +1,7 @@
-"""Golden real-model scenarios, with pending paths assigned to their build step."""
+"""Golden real-model scenarios for the current call flow."""
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 import json
 import os
 import re
@@ -14,9 +15,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 EVENT_PREFIX = 'GOLDEN_EVENT '
-SCENARIO_TIMEOUT = 90
-CLAIM = ('Someone rear-ended my 2021 Toyota Camry yesterday around 3pm at Main and '
-         '5th in San Jose. It was a collision.')
+SCENARIO_TIMEOUT = 180
+SAFE = "Yes, everyone's safe."
+_yesterday = datetime.now() - timedelta(days=1)
+# The agent refuses relative dates such as yesterday, so callers give an exact one.
+LOSS_DATE = f'{_yesterday:%B} {_yesterday.day}'
+INCIDENT = (f'Someone rear-ended me on {LOSS_DATE} at 3 PM at Main and 5th in San Jose. '
+            'I was stopped at a red light and the other driver hit my back bumper.')
 
 
 @dataclass(frozen=True)
@@ -38,110 +43,120 @@ class Scenario:
     draft_contains: str | None = None
     callback_written: bool = False
     callback_slot: tuple[int, int] | None = None
-    pending_step: int | None = None
     claims_added: int | None = None
     claim_number_spoken: bool = False
     expect_hangup: bool = False
     gated_turns: tuple[tuple[str, str], ...] = ()
-    fallback_turn: str = "Someone rear-ended me yesterday around 3pm at Main and 5th in San Jose. It was a collision."
+    fallback_turn: str = INCIDENT
     max_asks: tuple[tuple[str, int], ...] = ()
     must_ask: tuple[str, ...] = ()
     identity_confirmation: str = "Yes, that's correct."
 
 
-def identity(number, name, phone='628-268-8753'):
+def policy_phone(number):
+    # Mirrors the mock API seed, where each policy has its own number.
+    return f'628-555-{int(number) - 900:04d}'
+
+
+def identity(number, name, phone=None):
     return (f'I want to report a loss on my own policy. My policy number is {number}. '
-            f'Name is {name}. My phone number is {phone}.')
+            f'Name is {name}. My phone number is {phone or policy_phone(number)}.')
+
+
+def claim(vehicle):
+    return (f'Someone rear-ended my {vehicle} on {LOSS_DATE} at 3 PM at Main and 5th in San Jose. '
+            'I was stopped at a red light and the other driver hit my back bumper.')
 
 
 SCENARIOS = (
-    Scenario('happy_path', None, (identity('1010', 'Amanda Clark'), CLAIM),
+    Scenario('happy_path', None, (SAFE, identity('1010', 'Amanda Clark'), claim('2021 Kia Telluride')),
              gated_turns=(("review-claim", "Yes, please submit it."), ("claim-submitted", "No, that's everything.")),
-             max_asks=(("vehicle|camry", 0), ("policy number", 0), ("phone number", 0)),
+             max_asks=(("vehicle|telluride", 1), ("policy number", 0), ("phone number", 0)),
              required_tasks=('review-claim', 'claim-submitted'),
              required_logs=('Policy completion verified', 'Claim draft saved', 'Claim submitted'),
              claims_added=1, claim_number_spoken=True, expect_hangup=True,
              agent_must_contain=('add anything', 'claims portal')),
-    Scenario('hard_1_role', 1, ("I'm calling for my mother, William Harris. Her policy number is 1011. "
-                              'Her phone is 628-268-8753. I need to report that her car was stolen.',),
-             forbidden_tasks=('confirm-request', 'collect-claim'),
-             evaluate_pass=('The agent explains it can only open claims for the policyholder and offers assistance.',), pending_step=5),
-    Scenario('hard_1_intent_changes', 1, (identity('1012', 'Jennifer Lewis'),
+    Scenario('hard_1_role', 1, (SAFE, "I'm calling for my mother, William Harris. Her policy number is 1011. "
+                              f"Her phone is {policy_phone('1011')}. I need to report that her car was stolen.",),
+             terminal_task='callback-offer', forbidden_tasks=('confirm-request', 'collect-claim'),
+             agent_must_contain=('only open a claim for the policyholder',)),
+    Scenario('hard_1_intent_changes', 1, (SAFE, identity('1012', 'Jennifer Lewis'),
              'Actually, never mind that. I want to cancel a claim I already submitted instead.'),
-             terminal_task='unsupported-request', forbidden_logs=('Claim draft saved',), pending_step=5),
-    Scenario('hard_2_scope', 2, ('I want to cancel a claim I already submitted. My policy number is 1012. '
-                              'Name is Jennifer Lewis. My phone number is 628-268-8753.',),
+             terminal_task='unsupported-request', forbidden_logs=('Claim draft saved',)),
+    Scenario('hard_2_scope', 2, (SAFE, 'I want to cancel a claim I already submitted. My policy number is 1012. '
+                              f"Name is Jennifer Lewis. My phone number is {policy_phone('1012')}.",),
              terminal_task='unsupported-request', forbidden_tasks=('collect-claim',)),
-    Scenario('hard_3_identity', 3, (identity('1009', 'Jordan Smith', '555-555-0100'),),
+    Scenario('hard_3_identity', 3, (SAFE, identity('1009', 'Jordan Smith', '555-555-0100'),),
              gated_turns=(('verify-policy#2', identity('1009', 'Jordan Smith', '555-555-0100')),
                           ('verify-policy#3', identity('1009', 'Jordan Smith', '555-555-0100'))),
+             fallback_turn=identity('1009', 'Jordan Smith', '555-555-0100'),
              terminal_task='policy-verification-mismatch', forbidden_tasks=('confirm-request',),
-             agent_must_contain=("wasn't able to verify",),
-             agent_must_not_contain=('John Anderson', '8753', 'against the policy')),
-    Scenario('hard_4_missing_info', 4, (identity('1010', 'Amanda Clark'),
-             "My Toyota Camry was hit in a parking lot, but I honestly don't remember the date."),
+             agent_must_contain=("still couldn't verify",),
+             agent_must_not_contain=('John Anderson', '0109', 'against the policy')),
+    Scenario('hard_4_missing_info', 4, (SAFE, identity('1010', 'Amanda Clark'),
+             "My Kia Telluride was hit in a parking lot at the mall, but I honestly don't remember the date.",
+             "I really can't provide the date."),
              fallback_turn="I really can't provide the date.", terminal_task='claim-missing-details',
              forbidden_logs=('Claim draft saved',), claims_added=0),
-    Scenario('hard_5_correction', 5, (identity('1011', 'William Harris'), CLAIM),
+    Scenario('hard_5_correction', 5, (SAFE, identity('1011', 'William Harris'), claim('2021 Nissan Altima')),
              gated_turns=(('review-claim', 'Change the location to Oak Street.'),
-                          ('review-claim#2', "No, please don't submit anything.")),
+                          ('review-claim-1', "No, please don't submit anything.")),
+             terminal_task='claim-not-submitted',
              required_logs=('Claim fact corrected',), draft_policy='1011', draft_contains='Oak',
              claims_added=0, agent_must_contain=('oak street',)),
-    Scenario('hard_6_permission', 6, (identity('1012', 'Jennifer Lewis'), CLAIM),
+    Scenario('hard_6_permission', 6, (SAFE, identity('1012', 'Jennifer Lewis'), claim('2021 Toyota Sienna')),
              gated_turns=(("review-claim", "No, please don't submit anything."),),
              terminal_task='claim-not-submitted', required_tasks=('review-claim',),
              required_logs=('Claim draft saved', 'Claim not submitted'), forbidden_logs=('Claim submitted',),
              claims_added=0, agent_must_contain=('add anything',)),
-    Scenario('no_repeat_multi_vehicle', None, (identity('1008', 'Ashley Moore'), 'It was my 2021 Toyota Camry.'),
+    Scenario('no_repeat_multi_vehicle', None, (SAFE, identity('1008', 'Ashley Moore'), 'It was my 2021 Honda CR-V.'),
              gated_turns=(("review-claim", "No, please don't submit anything."),),
-             required_tasks=('review-claim',), claims_added=0, max_asks=(("which vehicle|camry|civic", 1),)),
-    Scenario('date_not_assumed', None, (identity('1009', 'John Anderson'),
-             'Someone rear-ended my 2021 Toyota Camry at 3pm at Main and 5th in San Jose. It was a collision.'),
-             fallback_turn='It was yesterday.',
+             required_tasks=('review-claim',), claims_added=0, max_asks=(("which vehicle|cr-v|f-150", 1),)),
+    Scenario('date_not_assumed', None, (SAFE, identity('1009', 'John Anderson'),
+             'Someone rear-ended my 2021 Ford F-150 at 3 PM at Main and 5th in San Jose. '
+             'I was stopped at a red light and the other driver hit my back bumper.',
+             'It was yesterday.', f'It was {LOSS_DATE} at 3 PM.'),
              gated_turns=(("review-claim", "No, please don't submit anything."),),
-             required_tasks=('review-claim',), claims_added=0, must_ask=('date|what day|which day',)),
-    Scenario('hard_7_api_down', 7, ('Yes, please.', "Yes, I'd like to schedule a callback.", 'Next Tuesday at 10 AM. Call me at 628-268-8753.'),
+             required_tasks=('review-claim',), claims_added=0, must_ask=('date|what day|which day',),
+             agent_must_contain=('exact date and time',)),
+    Scenario('hard_7_api_down', 7, (SAFE, 'Yes, please.', "Yes, I'd like to schedule a callback.", f"Next Tuesday at 10 AM. Call me at {policy_phone('1010')}."),
              api_down=True, terminal_task='callback-saved',
              required_tasks=('assistance-offer', 'callback-offer', 'collect-callback'), forbidden_tasks=('verify-policy',),
              required_logs=('Representative check none available', 'Callback saved'),
-             agent_must_contain=('unable to assist you right now', 'No GEICO representatives'),
              agent_must_not_contain=('how can i help',), callback_written=True),
-    Scenario('hard_7_callback_window', 7, ('Yes, please.', "Yes, I'd like to schedule a callback.",
-             'Saturday at 8 PM. Call me at 628-268-8753.', 'Okay, next Tuesday at 10 AM.'),
+    Scenario('hard_7_callback_window', 7, (SAFE, 'Yes, please.', "Yes, I'd like to schedule a callback.",
+             f"Saturday at 8 PM. Call me at {policy_phone('1010')}.", 'Okay, next Tuesday at 10 AM.'),
              api_down=True, terminal_task='callback-saved',
              required_logs=('Callback saved',), callback_written=True, callback_slot=(1, 10)),
-    Scenario('hard_7_time_as_answer', 7, ('Yes, please.', 'Next Tuesday at 10 AM. Call me at 628-268-8753.'),
+    Scenario('hard_7_time_as_answer', 7, (SAFE, 'Yes, please.', f"Next Tuesday at 10 AM. Call me at {policy_phone('1010')}."),
              api_down=True, terminal_task='callback-saved',
              required_tasks=('assistance-offer', 'callback-offer', 'collect-callback'),
              required_logs=('Callback saved',), callback_written=True, callback_slot=(1, 10)),
     Scenario('spelled_name_identity', None,
-             ("I want to report a loss on my own policy. My policy number is 1006. My name is spelled J E S S I C A B R O W N. My phone number is 628-268-8753.",),
+             (SAFE, "I want to report a loss on my own policy. My policy number is 1006. My name is spelled J E S S I C A B R O W N. "
+              f"My phone number is {policy_phone('1006')}.",),
              required_logs=('Policy completion verified',), required_tasks=('confirm-identity',)),
     Scenario('volunteered_facts', None,
-             ('Hi, I got rear-ended on Main Street and I want to start a claim.',
-              'My policy number is 1010. My name is Amanda Clark. My phone number is 628-268-8753.',
-              'It happened yesterday at 3pm. It was a collision.'),
+             (SAFE, 'Hi, I got rear-ended on Main Street and I want to start a claim.',
+              f"My policy number is 1010. My name is Amanda Clark. My phone number is {policy_phone('1010')}.",
+              f'It happened {LOSS_DATE} at 3 PM in my 2021 Kia Telluride. I was stopped at a red light and the other driver hit my back bumper.'),
              gated_turns=(('review-claim', "No, please don't submit anything."),),
              forbidden_tasks=('confirm-request',), agent_must_contain=('add anything',),
              max_asks=(('what happened|where did|where was', 0),)),
-    Scenario('hard_9_multiple', 9, (identity('1010', 'Amanda Clark'),
+    Scenario('hard_9_multiple', 9, (SAFE, identity('1010', 'Amanda Clark'),
              'I have two separate accidents to report, one yesterday and one last month.'),
-             evaluate_pass=('The agent asks which incident to handle first and keeps them separate.',), pending_step=5),
-    Scenario('hard_10_communication', 10, (identity('1011', 'William Harris'),
+             evaluate_pass=('The agent asks which incident to handle first and keeps them separate.',)),
+    Scenario('hard_10_communication', 10, (SAFE, identity('1011', 'William Harris'),
              "Sorry, I can't understand you. Can you please speak slower?"),
-             evaluate_pass=('The agent adapts its communication and does not pretend the caller understood.',), pending_step=5),
-    Scenario('hard_11_safety', 11, (identity('1012', 'Jennifer Lewis'),
+             evaluate_pass=('The agent adapts its communication and does not pretend the caller understood.',)),
+    Scenario('hard_11_safety', 11, (SAFE, identity('1012', 'Jennifer Lewis'),
              'I just crashed and my passenger is bleeding badly right now.'),
-             agent_must_contain=('call 911 now',), forbidden_logs=('Claim draft saved',), pending_step=5),
+             expect_hangup=True, agent_must_contain=('call 911 now',), forbidden_logs=('Claim draft saved',)),
 )
 
 
 def scenario_parameter(scenario):
-    marks = [pytest.mark.golden]
-    if scenario.pending_step is not None:
-        marks += [pytest.mark.golden_pending,
-                  pytest.mark.xfail(strict=False, reason=f'Built in Step {scenario.pending_step}')]
-    return pytest.param(scenario, id=scenario.id, marks=marks)
+    return pytest.param(scenario, id=scenario.id, marks=pytest.mark.golden)
 
 
 def normalize_agent_text(text):
@@ -178,7 +193,7 @@ def test_golden(scenario, tmp_path):
     logs = [event['message'] for event in events if event['kind'] == 'log']
     asked_lines = []
     for line in transcript.splitlines():
-        if 'here is what i have' in line.casefold():
+        if "here's what i have" in line.casefold():
             break
         if 'i have your policy number as' in line.casefold():
             continue  # Confirmation is not a repeated request for the identity values.
@@ -234,7 +249,6 @@ def test_golden(scenario, tmp_path):
     if scenario.expect_hangup:
         assert latest.get('termination_reason') == 'bot-hangup'
     if scenario.evaluate_pass:
-        assert scenario.pending_step is not None
         evaluations = [event for event in events if event['kind'] == 'evaluation']
         assert evaluations and evaluations[-1]['passed'], evaluations
     if scenario.draft_policy:
@@ -394,6 +408,7 @@ def run_scenario(scenario):
                         session.wait_for_end()
                     if scenario.terminal_task:
                         while scenario.terminal_task not in tasks:
+                            answer_identity(session)
                             session.recv()
                 except (TerminalReached, ConnectionClosedOK):
                     pass

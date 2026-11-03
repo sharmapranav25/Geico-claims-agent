@@ -23,5 +23,4 @@ dev = [
 addopts = "-m 'not golden'"
 markers = [
     "golden: opt-in scripted real-model acceptance scenarios",
-    "golden_pending: acceptance paths assigned to a later sprint step",
 ]
