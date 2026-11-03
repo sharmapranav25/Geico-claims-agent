@@ -55,6 +55,7 @@ class FakeBridge:
         self.completions = {}
         self.actions = {}
         self.hang_up = Mock(side_effect=lambda call, line: self.instructions.append(line))
+        self.read_script = Mock()
 
     def set_task(self, call, task_id, objective, todos=(), *, fields=(), say=(), completion_criteria=""):
         self.tasks.append(SimpleNamespace(task_id=task_id, objective=objective, fields=fields, say=say, completion_criteria=completion_criteria))
@@ -128,7 +129,7 @@ def test_down_start_uses_say_and_never_verifies(adapter, unavailable_api, callba
     after_safety(coordinator.state_for(call, adapter.SDK_BRIDGE))
     coordinator.start_call(call, adapter.SDK_BRIDGE)
     state = coordinator.state_for(call, adapter.SDK_BRIDGE)
-    assert list(state.results) == ['check_api', 'start_assistance']
+    assert list(state.results) == ['ask_how_to_help', 'check_api', 'start_assistance']
     assert state.result('check_api').ok is False
     command, = call._command_queue
     assert command.task_id == assistance.OFFER_TASK_ID

@@ -10,7 +10,8 @@ from . import endings, policy_lookup
 logger = logging.getLogger(__name__)
 TASK_ID = 'verify-policy'
 CONFIRM_TASK_ID = 'confirm-identity'
-TASK_IDS = (TASK_ID, CONFIRM_TASK_ID)
+HELP_TASK_ID = 'ask-how-to-help'
+TASK_IDS = (HELP_TASK_ID, TASK_ID, CONFIRM_TASK_ID)
 MAX_IDENTITY_RETRIES = 2
 POLICY_QUESTION = 'What is your policy number?'
 NAME_QUESTION = 'What is your full name?'
@@ -22,13 +23,11 @@ FAILED_LINE = "I'm sorry, I still couldn't verify those details, so I can't open
 VERIFIED_LINE = "Thanks so much, you're all verified."
 
 
-def identity_fields(spell_name=False, ask_request=False):
+def identity_fields(spell_name=False):
     from ..coordinator import REPORT_OWN_LOSS, OTHER_REQUEST
 
     volunteer = ' Record this only if the caller volunteers it. Never ask for it.'
-    request = [FieldDefinition('request_type', 'What the caller wants: report_own_loss if they are reporting a loss or opening a claim, otherwise other_request.',
-                               question=HELP_QUESTION, field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST), required=False)] if ask_request else []
-    return request + [
+    return [
         FieldDefinition('policy_number', 'The policy number, digits only. Do not record letters.',
                         question=POLICY_QUESTION, field_type='digit_sequence', sensitive=True),
         FieldDefinition('caller_name', 'Have the caller spell it letter by letter, then record it as normal words, like Jessica Brown.'
@@ -36,11 +35,28 @@ def identity_fields(spell_name=False, ask_request=False):
                         question=SPELL_NAME_QUESTION if spell_name else NAME_QUESTION),
         FieldDefinition('caller_phone', "Ask the caller for their own phone number on the policy.",
                         question=PHONE_QUESTION, field_type='digit_sequence', sensitive=True),
-        *([] if ask_request else [FieldDefinition('request_type', 'The request type.' + volunteer, required=False,
-                                                  field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST))]),
+        FieldDefinition('request_type', 'The request type.' + volunteer, required=False,
+                        field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST)),
         FieldDefinition('description', "What happened. Record what happened in the caller's own words, for example 'my mother', not 'the caller's mother'." + volunteer, required=False),
         FieldDefinition('location', 'Where it happened.' + volunteer, required=False),
     ]
+
+
+def ask_how_to_help(call, bridge):
+    from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE, REPORT_OWN_LOSS, OTHER_REQUEST
+
+    bridge.set_task(call, HELP_TASK_ID,
+        fields=[FieldDefinition('request_type', 'What the caller wants: report_own_loss if they are reporting a loss or opening a claim, otherwise other_request.',
+                                question=HELP_QUESTION, field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST))],
+        completion_criteria='Complete as soon as the answer is recorded.',
+        objective="Ask how you can help, unless the caller already said. Ask nothing else, do not ask for any details and do not promise anything; "
+        "the application decides what happens next. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)
+
+
+def capture_help(call, state, bridge):
+    value = bridge.get_field(call, 'request_type')
+    if value:
+        state.set_fact('request_type', value)
 
 
 def start(call, bridge, state=None):
@@ -49,9 +65,9 @@ def start(call, bridge, state=None):
     state = state if state is not None else state_for(call, bridge)
     _start_live(call, state, bridge)
 
-    bridge.set_task(call, TASK_ID, fields=identity_fields(ask_request=True),
+    bridge.set_task(call, TASK_ID, fields=identity_fields(),
         completion_criteria='Complete as soon as the policy number, name and phone are recorded. Do not read them back or re-confirm them.',
-        objective="Do not greet the caller again. First ask how you can help, unless the caller already said. Then warmly say you can help with that and "
+        objective="Do not greet the caller again. Warmly say you can help with that and "
         "you just need a few details, and collect the policy number, name and phone using each field's question wording exactly. "
         "If the caller already gave one, record it and skip that question. Ask only these questions. "
         "Do not ask about the loss or discuss it until the application tells you to. Say nothing about what the policy contains. "

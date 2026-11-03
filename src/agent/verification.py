@@ -41,6 +41,23 @@ def parse_occurred_at(value):
     return parsed if parsed.tzinfo else parsed.astimezone()
 
 
+def match_vehicle(value, labels):
+    # Spoken vehicles rarely match a label exactly, but a stated year must match and only one vehicle may fit.
+    def words(text):
+        return re.sub(r'[^\w\s]', '', str(text).casefold()).split()
+
+    stated = set(words(value))
+    matches = []
+    for label in labels:
+        year, *name = words(label)
+        years = {word for word in stated if re.fullmatch(r'(19|20)\d\d', word)}
+        if (not years or years == {year}) and stated & set(name):
+            matches.append(label)
+    exact = [label for label in matches if set(words(label)) <= stated]
+    matches = exact or matches
+    return matches[0] if len(matches) == 1 else None
+
+
 def is_relative_time(text):
     # The model cannot reliably turn these into a date, and a claim needs an exact one.
     text = text.casefold() if isinstance(text, str) else ''

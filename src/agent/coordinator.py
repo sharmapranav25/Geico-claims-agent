@@ -14,11 +14,12 @@ DEFAULT_PURPOSE = (
     "Verify the caller's GEICO policy, then help them report an auto loss. "
     "Never say 'one moment', 'just a moment' or that you are getting, processing or pulling something up. "
     "If there is a long pause and you have nothing to ask, make light small talk, such as asking how their day is going or "
-    "how the weather is where they are. Do this at most once in a call, and skip it if someone was hurt or the caller sounds upset."
+    "how the weather is where they are. Do this at most once in a call, never instead of a question you still need to ask, "
+    "and skip it if someone was hurt or the caller sounds upset."
 )
 REQUEST_TASK_ID = "confirm-request"
 COMPLETION_TASKS = tuple(dict.fromkeys((*safety.TASK_IDS, REQUEST_TASK_ID, *identity.TASK_IDS, *claim_intake.TASK_IDS, *review_claim.TASK_IDS, *submit_claim.TASK_IDS, *assistance.TASK_IDS, *endings.TASK_IDS)))
-CAPTURES = {identity.TASK_ID: identity.capture, claim_intake.TASK_ID: claim_intake.capture,
+CAPTURES = {identity.HELP_TASK_ID: identity.capture_help, identity.TASK_ID: identity.capture, claim_intake.TASK_ID: claim_intake.capture,
             claim_intake.DETAILS_TASK_ID: claim_intake.capture_details,
             review_claim.REVIEW_TASK_ID: review_claim.capture}
 REPORT_OWN_LOSS = "report_own_loss"
@@ -41,9 +42,9 @@ KEEP_CONTEXT_RULE = (
 # Descriptions help the classifier distinguish whose loss is being reported.
 INTENT_CHOICES = {
     "intent_a": (
-        "A loss reported under the policy covering the person or vehicle concerned. "
-        "The caller may be the policyholder or reporting on their behalf. Another "
-        "driver's involvement does not by itself make this Intent A or B."
+        "A loss the policyholder is reporting on their own policy. A caller reporting "
+        "for someone else is not this. Another driver's involvement does not by itself "
+        "make this Intent A or B."
     ),
     "intent_b": (
         "Damage allegedly caused by a GEICO-insured person or vehicle, reported by "
@@ -82,6 +83,11 @@ def next_start_action(call, state, bridge):
     if state.result('start_verification') is not None or state.result('start_assistance') is not None:
         return None
     if check.ok:
+        if state.result('ask_how_to_help') is None:
+            return Action('ask_how_to_help', 'guava', lambda: identity.ask_how_to_help(call, bridge))
+        # Hold the identity questions until the supervisor has read the caller's answer.
+        if not state.done(identity.HELP_TASK_ID) or state.pending_lines:
+            return None
         return Action('start_verification', 'guava', lambda: identity.start(call, bridge, state))
     return Action('start_assistance', 'guava', lambda: assistance.start(call, bridge))
 
@@ -189,13 +195,24 @@ def next_request_action(call, state, bridge):
     return Action('start_request', 'guava', start_request)
 
 
-def on_intent_a(call) -> str:
+def on_intent_a(call, bridge: CallBridge) -> str:
     # Never restart a task here: repeating set_task discards its collected progress.
-    return CONTINUE_TASK
+    return _role_stop(state_for(call, bridge)) or CONTINUE_TASK
+
+
+def _role_stop(state):
+    # A slower action answer must not send the model back to a claim the role check stopped.
+    with state.lock:
+        if state.claim_blocked:
+            return 'Stop collecting claim details. The application has already told the caller the limit. Wait for their answer.'
+    return None
 
 
 def on_intent_b(call, bridge: CallBridge) -> str | None:
     state = state_for(call, bridge)
+    stop = _role_stop(state)
+    if stop:
+        return stop
     if state.verified_profile is not None or state.result('start_assistance') is not None:
         return CONTINUE_TASK
     state.open_task = "intent-b-placeholder"
@@ -212,7 +229,10 @@ def on_intent_b(call, bridge: CallBridge) -> str | None:
     )
 
 
-def on_immediate_danger_or_other(call, bridge: CallBridge) -> None:
+def on_immediate_danger_or_other(call, bridge: CallBridge) -> str | None:
+    stop = _role_stop(state_for(call, bridge))
+    if stop:
+        return stop
     bridge.send_instruction(call,
         "Immediate danger or other service selected. Acknowledge the caller's "
         "request. If there is immediate danger, guide them to local emergency "
@@ -242,7 +262,7 @@ def on_question(call, question, bridge) -> str:
 def register(agent, bridge: CallBridge):
     # Connect each route once; workflows own their validation and API access.
     bridge.register_actions(agent, INTENT_CHOICES, {
-        "intent_a": on_intent_a,
+        "intent_a": partial(on_intent_a, bridge=bridge),
         "intent_b": partial(on_intent_b, bridge=bridge),
         "immediate_danger_or_other": partial(on_immediate_danger_or_other, bridge=bridge),
     })

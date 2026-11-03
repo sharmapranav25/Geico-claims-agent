@@ -5,7 +5,7 @@ import time
 
 from agent import coordinator
 from agent.call_state import ActionResult
-from agent.workflows import safety
+from agent.workflows import identity, safety
 
 
 def safe_generate(prompt, json_schema):
@@ -14,7 +14,7 @@ def safe_generate(prompt, json_schema):
         description = json.loads(prompt.split('\n')[-1]).get('description')
         return json.dumps({'summary': description or 'An incident was reported.', 'report': description or 'An incident was reported.', 'loss_type': 'collision'})
     if 'role' in keys:
-        return json.dumps({'danger': False, 'role': 'unverified', 'multiple_incidents': False, 'inconsistent': False})
+        return json.dumps({'danger': False, 'role': 'unverified', 'multiple_incidents': False, 'inconsistent': False, 'wants_human': False})
     if 'fields' in keys:
         return json.dumps({'inconsistent': False, 'fields': [], 'reason': ''})
     return json.dumps({key: True for key in keys})
@@ -22,6 +22,8 @@ def safe_generate(prompt, json_schema):
 
 def after_safety(state):
     state.mark_done(safety.TASK_ID)
+    state.mark_done(identity.HELP_TASK_ID)
+    state.record(ActionResult('ask_how_to_help', 'guava', True))
     return state
 
 

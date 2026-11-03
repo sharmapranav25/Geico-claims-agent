@@ -84,8 +84,8 @@ def test_start_offers_only_this_policys_vehicles():
     task_id, _, fields = bridge.tasks[0]
     assert task_id == claim_intake.TASK_ID
     vehicle = next(field for field in fields if field.key == 'vehicle')
-    assert vehicle.choices == ('2021 Toyota Camry', '2022 Honda Civic', claim_intake.NOT_ON_POLICY)
-    assert vehicle.question == 'Which vehicle was involved?'
+    assert vehicle.choices == () and vehicle.field_type == 'text'
+    assert vehicle.question == 'Which vehicle was involved: 2021 Toyota Camry or 2022 Honda Civic?'
 
 
 def test_occurred_at_rejects_future_with_fixed_now():
@@ -105,7 +105,7 @@ def test_single_vehicle_is_confirmed_with_the_caller(api):
     claim_intake.start(call, bridge, bridge.state)
     vehicle = next(field for field in bridge.tasks[-1][2] if field.key == 'vehicle')
     assert vehicle.question == 'I see your 2021 Toyota Camry on this policy. Was that the vehicle involved?'
-    assert vehicle.choices == ('2021 Toyota Camry', claim_intake.NOT_ON_POLICY)
+    assert vehicle.choices == ()
     assert bridge.state.fact('vehicle') is None
     bridge.completions[claim_intake.TASK_ID](call)
     assert api.update_claim_draft.call_args.args[1].vehicle_id == 'V01-1'
@@ -447,3 +447,34 @@ def test_review_loss_wording(loss_type, loss):
         f"at Main and 5th. Rear-ended at a light.{loss} "
         "Would you like to add anything, or should I file this claim?"
     )
+
+
+@pytest.mark.parametrize('said,expected', [
+    ('2021 Toyota Camry', '2021 Toyota Camry'), ('the camry', '2021 Toyota Camry'), ('2022 Civic', '2022 Honda Civic'),
+    ('Honda', '2022 Honda Civic'), ('2022 Toyota Camry', None), ('2023 Ford F-150', None), ('my car', None),
+])
+def test_spoken_vehicle_matches_only_one_policy_vehicle(said, expected):
+    assert verification.match_vehicle(said, ('2021 Toyota Camry', '2022 Honda Civic')) == expected
+
+
+def test_punctuated_models_match_when_spoken_without_punctuation():
+    assert verification.match_vehicle('Ford 2023 F150', ('2021 Mazda CX-5', '2022 Honda CR-V', '2023 Ford F-150')) == '2023 Ford F-150'
+    assert verification.match_vehicle('Ford', ('2021 Ford Escape', '2022 Ford F-150')) is None
+
+
+def test_vehicle_validator_tells_the_model_what_the_policy_shows(api):
+    bridge = registered()
+    claim_intake.register(object(), bridge)
+    state = coordinator.state_for({}, bridge)
+    state.verified_profile = PROFILE
+    valid, message = bridge.validators['vehicle']({}, '2022 Toyota Camry')
+    assert valid is False and '2021 Toyota Camry' in message
+    assert bridge.validators['vehicle']({}, 'the Camry') is True
+    assert bridge.validators['vehicle']({}, claim_intake.NOT_ON_POLICY) is True
+
+
+def test_spoken_vehicle_is_stored_as_the_policy_label(api):
+    bridge = registered()
+    bridge.completions[claim_intake.TASK_ID](dict(FIELDS, vehicle='my 2022 honda civic'))
+    assert bridge.state.fact('vehicle') == '2022 Honda Civic'
+

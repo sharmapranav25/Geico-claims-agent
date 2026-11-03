@@ -28,7 +28,7 @@ def _schema(properties):
 LINE_SCHEMA = _schema({
     'danger': {'type': 'boolean'},
     'role': {'type': 'string', 'enum': ['owner', 'someone_else', 'unverified']},
-    'multiple_incidents': {'type': 'boolean'}, 'inconsistent': {'type': 'boolean'},
+    'multiple_incidents': {'type': 'boolean'}, 'inconsistent': {'type': 'boolean'}, 'wants_human': {'type': 'boolean'},
 })
 FACTS_SCHEMA = _schema({
     'inconsistent': {'type': 'boolean'},
@@ -47,6 +47,7 @@ LINE_PROMPT = (
     'A family member involved in the accident does not count. Never infer someone_else from missing ownership. '
     'Use owner if they say the policy is theirs, otherwise unverified. '
     'multiple_incidents: several separate incidents or tasks. '
+    'wants_human: the caller asks to speak to a person, a human, a representative or an agent. '
     'inconsistent: this caller line contradicts itself. A self-correction such as Monday, no wait, Tuesday does not count.\n'
 )
 FACTS_PROMPT = (
@@ -132,10 +133,13 @@ def record(state, role, text, utterance_id):
 
 
 def settle(call, state, bridge, text, utterance_id):
+    from . import coordinator
+
     key = utterance_id if utterance_id is not None else object()
     previous = state.speech_timers.get(key)
     if previous is not None:
         previous.cancel()
+    state.pending_lines.add(key)
     agent_line = next((line[1] for line in reversed(state.lines) if line[0] == 'agent'), '')
 
     def settled():
@@ -145,6 +149,8 @@ def settle(call, state, bridge, text, utterance_id):
             state.speech_timers.pop(key)
             pair = (key, text)
             if pair in state.classified_lines:
+                state.pending_lines.discard(key)
+                coordinator.run_checklist(call, state, bridge)
                 return
             state.classified_lines.add(pair)
         _start_worker(lambda: _classify(call, state, bridge, agent_line, text, utterance_id, key))
@@ -166,9 +172,13 @@ def _classify(call, state, bridge, agent_line, text, utterance_id, key):
 
     answer = ask(bridge, LINE_PROMPT + json.dumps({'agent': agent_line, 'caller': text}), LINE_SCHEMA, check_line)
     with state.lock:
-        if answer is None or state.ended or state.stopped:
+        if key not in state.speech_timers:
+            state.pending_lines.discard(key)
+        if state.ended or state.stopped:
             return
-        if utterance_id is not None and not any(line[1:] == (text, utterance_id) for line in state.lines):
+        if answer is None or (utterance_id is not None and not any(line[1:] == (text, utterance_id) for line in state.lines)):
+            # A failed or outdated check must not hold the call.
+            coordinator.run_checklist(call, state, bridge)
             return
         if answer['danger']:
             state.signals['danger'] = True
@@ -176,6 +186,9 @@ def _classify(call, state, bridge, agent_line, text, utterance_id, key):
         if answer['role'] == 'someone_else':
             state.signals['someone_else'] = True
             logger.info('Supervisor signal someone_else')
+        if answer['wants_human']:
+            state.signals['human'] = True
+            logger.info('Supervisor signal human')
         if not state.claim_blocked:
             if answer['multiple_incidents'] and 'multiple_incidents' not in state.raised:
                 state.raised.add('multiple_incidents')

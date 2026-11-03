@@ -38,6 +38,7 @@ class CallState:
     review_decision_seen: str | None = None
     review_line_start: int = 0
     speech_timers: dict = field(default_factory=dict, repr=False)
+    pending_lines: set = field(default_factory=set, repr=False)
     classified_lines: set = field(default_factory=set, repr=False)
     results: dict[str, ActionResult] = field(default_factory=dict)
     completed_tasks: set[str] = field(default_factory=set)
