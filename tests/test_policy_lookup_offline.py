@@ -9,10 +9,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, checklist, coordinator, verification
 from agent.call_state import CallState
+from supervisor_helpers import safe_generate, after_safety, completion
 from agent.workflows import policy_lookup, identity
 
 
 class FakeBridge:
+    generate = staticmethod(safe_generate)
+
     def __init__(self):
         self.tasks = []
         self.validators = {}
@@ -36,6 +39,7 @@ def register(bridge):
         bridge.set_task(call, 'verified', coordinator.CALL_ENDING_RULE)
 
     state = CallState('test-session', identity_retries=identity.MAX_IDENTITY_RETRIES)
+    after_safety(state)
     bridge.state = state
     verified = Mock(side_effect=on_verified)
     policy_lookup.register(object(), bridge)
@@ -67,7 +71,7 @@ def test_verification_with_fake_bridge(api, name, phone, task):
     bridge = FakeBridge()
     call = {'policy_number': ' 1001 ', 'caller_name': name, 'caller_phone': phone}
     register(bridge)
-    identity.start(call, bridge)
+    identity.start(call, bridge, bridge.state)
     assert bridge.tasks[0][1] == identity.TASK_ID
     fields = bridge.tasks[0][3]
     assert [f.key for f in fields[:3]] == ['policy_number', 'caller_name', 'caller_phone']
@@ -171,7 +175,7 @@ def test_verification_uses_sensitive_digit_sequence_phone(api):
     bridge = FakeBridge()
     verified = register(bridge)
     call = {'policy_number': '1001', 'caller_name': 'Michael Johnson', 'caller_phone': '6282688753'}
-    identity.start(call, bridge)
+    identity.start(call, bridge, bridge.state)
     fields = {field.key: field for field in bridge.tasks[-1][3]}
     assert fields['caller_phone'].field_type == 'digit_sequence'
     assert fields['caller_phone'].sensitive is True

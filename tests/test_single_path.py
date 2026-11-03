@@ -10,6 +10,7 @@ import pytest
 from test_api_outage import FakeBridge as BaseBridge, PROFILE, adapter, call_fields, callback_path
 from agent import api_adapter, coordinator
 from agent.call_state import ActionResult, CallState
+from supervisor_helpers import after_safety
 from agent.workflows import assistance, claim_intake, policy_lookup, identity, review_claim, submit_claim
 
 
@@ -51,7 +52,7 @@ def run_call(monkeypatch, options):
     factory.return_value.__exit__ = Mock(return_value=False)
     monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
     coordinator.register(object(), bridge)
-    state = coordinator.state_for(call, bridge)
+    state = after_safety(coordinator.state_for(call, bridge))
     recorded = []
     command_count = 0
     original_record = state.record
@@ -271,7 +272,7 @@ def test_intent_b_does_not_replace_active_task(callback_path, stage):
     bridge = FakeBridge()
     call = call_fields()
     coordinator.register(object(), bridge)
-    state = coordinator.state_for(call, bridge)
+    state = after_safety(coordinator.state_for(call, bridge))
     if stage == 'verified':
         state.verified_profile = PROFILE
     else:
@@ -300,6 +301,7 @@ def test_new_branches_through_registered_handlers(monkeypatch, callback_path, br
         bridge.completions[task](call)
         assert len(bridge.tasks) == before + 1
 
+    after_safety(coordinator.state_for(call, bridge))
     coordinator.start_call(call, bridge)
     finish(identity.TASK_ID)
     if branch == 'no_identity':
@@ -314,7 +316,7 @@ def test_new_branches_through_registered_handlers(monkeypatch, callback_path, br
     finish(identity.CONFIRM_TASK_ID)
     call['request_type'] = coordinator.REPORT_OWN_LOSS
     finish(coordinator.REQUEST_TASK_ID)
-    state = coordinator.state_for(call, bridge)
+    state = after_safety(coordinator.state_for(call, bridge))
     if branch == 'missing':
         call['occurred_at'] = None
     if branch == 'optional':

@@ -8,6 +8,7 @@ from agent import checklist, coordinator
 from agent.action_loop import advance
 from agent.call_state import CallState
 from agent.workflows import assistance, claim_intake, endings, identity, submit_claim
+from supervisor_helpers import after_safety
 from test_api_outage import FakeBridge
 
 
@@ -37,7 +38,7 @@ def start_outcome(name, call, state, bridge):
 @pytest.mark.parametrize('name', endings.FINAL_LINES)
 @pytest.mark.parametrize('answers', [('done',), ('more', 'done'), ('more', 'more')])
 def test_each_ending_hangs_up_exactly_once(name, answers):
-    call, state, bridge = {}, CallState('ending'), FakeBridge()
+    call, state, bridge = {'session_id': 'ending'}, after_safety(CallState('ending')), FakeBridge()
     coordinator.register_completions(object(), bridge, lambda call: state)
     start_outcome(name, call, state, bridge)
     assert state.ending == name

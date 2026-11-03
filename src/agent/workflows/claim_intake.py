@@ -25,6 +25,7 @@ def claim_facts(state):
 
 def start(call, bridge, state, say=()):
     from ..coordinator import CALL_ENDING_RULE, KEEP_CONTEXT_RULE
+    from .. import supervisor
 
     profile = state.verified_profile
     if len(profile.vehicles) == 1:
@@ -48,18 +49,47 @@ def start(call, bridge, state, say=()):
                         field_type='multiple_choice', choices=LOSS_TYPES, required=False),
     ]
     fields = [field for field in fields if not facts[field.key]]
+    keep_description = bool(fields and facts['description'])
+    if keep_description:
+        fields.append(FieldDefinition('description',
+            "The caller already described this. Update it only if they add details, combining old and new in the caller's own words. Never ask for it from scratch.",
+            required=False))
     if fields:
         correction = ' Record this only if the caller changes something they already gave. Never ask for it.'
         fields += [FieldDefinition('corrected_field', 'The detail changed.' + correction,
                                    field_type='multiple_choice', choices=CLAIM_FIELDS, required=False),
                    FieldDefinition('corrected_value', 'The new value.' + correction, required=False)]
+    state.open_task = TASK_ID
+    state.live_keys = tuple(field.key for field in fields if not field.key.startswith('corrected_'))
+    state.live_seen = {key: bridge.get_field(call, key) for key in state.live_keys}
     bridge.set_task(call, TASK_ID, say=say, fields=fields,
-        completion_criteria='Complete as soon as every field is recorded. Do not ask for extra confirmation; the application reads the details back next.',
+        completion_criteria='Complete as soon as every field you need to ask for is recorded. Do not ask for extra confirmation; the application reads the details back next.',
         objective='Fill out the loss report with the verified caller. Record anything '
         'they already described without asking again, and ask only for what '
         'is still missing. Do not decide fault, coverage or payment, and do '
         'not say a claim was created or submitted. Do not ask if there is anything else, close the call, '
         'or say the report is filed or passed along. ' + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)
+    if keep_description:
+        supervisor.check_description(call, state, bridge)
+
+
+def capture_live(call, state, bridge):
+    from .. import supervisor
+    from . import identity
+
+    if state.open_task not in (identity.TASK_ID, TASK_ID) or state.stopped or state.claim_blocked:
+        state.live_keys = ()
+        return
+    for key in state.live_keys:
+        value = bridge.get_field(call, key)
+        if value == state.live_seen.get(key) or value is None or not str(value).strip():
+            continue
+        state.live_seen[key] = value
+        if key in ('occurred_at', 'stated_time') and verification.validate_occurred_at(value) is not True:
+            continue
+        fact_key = 'occurred_at' if key == 'stated_time' else key
+        state.set_fact(fact_key, value)
+        supervisor.on_fact_changed(call, state, bridge, fact_key)
 
 
 def capture(call, state, bridge):
@@ -82,7 +112,9 @@ def apply_correction(state, field, value):
     if verification.correction_is_valid(field, value, labels, LOSS_TYPES):
         logger.info('Claim fact corrected')
         state.set_fact(field, value)
-        state.clear_results('save_draft', 'start_review', 'announce_save')
+        state.clear_results('save_draft', 'start_review', 'announce_save', 'write_summary', 'final_consistency')
+        state.closeout_generation += 1
+        state.summary_ready = state.consistency_ready = False
     else:
         logger.info('Claim correction rejected')
         state.clear_results('start_review')
@@ -98,12 +130,18 @@ def apply_addition(state, value):
         previous = (state.fact('description') or '').rstrip('.!? ')
         state.set_fact('description', previous + '. ' + value.strip().lstrip('.!? '))
         logger.info('Claim details added')
-        state.clear_results('save_draft', 'start_review', 'announce_save')
+        state.clear_results('save_draft', 'start_review', 'announce_save', 'write_summary', 'final_consistency')
+        state.closeout_generation += 1
+        state.summary_ready = state.consistency_ready = False
     else:
         logger.info('Claim correction rejected')
         state.clear_results('start_review')
         state.review_prefix = "I couldn't use that change. "
     state.clear_done(review_claim.REVIEW_TASK_ID)
+
+
+def store_summary(state, summary):
+    state.set_fact('incident_summary', summary)
 
 
 def _announce_failed(call, bridge, state):
@@ -128,6 +166,15 @@ def next_action(call, state, bridge, on_unavailable):
         return None
     if missing:
         return Action('announce_missing', 'guava', lambda: _announce_missing(call, bridge, state, missing))
+    from .. import supervisor
+    if state.result('write_summary') is None:
+        return Action('write_summary', 'guava', lambda: supervisor.start_summary(call, state, bridge))
+    if not state.summary_ready:
+        return None
+    if state.result('final_consistency') is None:
+        return Action('final_consistency', 'guava', lambda: supervisor.start_final_consistency(call, state, bridge))
+    if not state.consistency_ready:
+        return None
     saved = state.result('save_draft')
     if saved is None:
         def save_draft():

@@ -11,6 +11,7 @@ from guava.testing import MockCall
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, checklist, coordinator, verification
 from agent.call_state import CallState
+from supervisor_helpers import after_safety, safe_generate
 from agent.workflows import policy_lookup, identity
 
 try:
@@ -44,9 +45,10 @@ def test_registered_completion_branches_and_fields():
         from agent.guava_adapter import SDKBridge
         agent = guava.Agent(name='Test')
     bridge = SDKBridge()
+    bridge.generate = safe_generate
     states = {}
     policy_lookup.register(agent, bridge)
-    coordinator.register_completions(agent, bridge, lambda call: states.setdefault(call.id, CallState(call.id, identity_retries=identity.MAX_IDENTITY_RETRIES)), checklist.Routes(
+    coordinator.register_completions(agent, bridge, lambda call: states.setdefault(call.id, after_safety(CallState(call.id, identity_retries=identity.MAX_IDENTITY_RETRIES))), checklist.Routes(
         lambda call, profile: coordinator.on_verified(call, profile, bridge), Mock(),
     ))
     assert set(agent._on_validate_handlers) == {'policy_number'}

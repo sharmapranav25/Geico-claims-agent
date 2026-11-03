@@ -1,7 +1,7 @@
 """Session-scoped call state and its in-memory store."""
 
 from dataclasses import dataclass, field
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any, Literal, Protocol
 
 
@@ -16,6 +16,23 @@ class ActionResult:
 @dataclass
 class CallState:
     session_id: str
+    lock: RLock = field(default_factory=RLock, repr=False)
+    ended: bool = False
+    stopped: bool = False
+    claim_blocked: bool = False
+    lines: list = field(default_factory=list)
+    signals: dict = field(default_factory=dict)
+    pending_nudges: list = field(default_factory=list)
+    nudge_count: int = 0
+    raised: set = field(default_factory=set)
+    live_seen: dict = field(default_factory=dict)
+    live_keys: tuple = ()
+    open_task: str | None = None
+    closeout_generation: int = 0
+    summary_ready: bool = False
+    consistency_ready: bool = False
+    speech_timers: dict = field(default_factory=dict, repr=False)
+    classified_lines: set = field(default_factory=set, repr=False)
     results: dict[str, ActionResult] = field(default_factory=dict)
     completed_tasks: set[str] = field(default_factory=set)
     verified_profile: Any = None

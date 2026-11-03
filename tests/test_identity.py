@@ -5,6 +5,7 @@ from unittest.mock import Mock
 import pytest
 from agent import api_adapter, coordinator
 from agent.workflows import identity
+from supervisor_helpers import after_safety
 from test_api_outage import FakeBridge, call_fields, callback_path, PROFILE
 
 
@@ -19,6 +20,7 @@ def flow(monkeypatch, callback_path):
     factory.return_value.__exit__ = Mock(return_value=False)
     monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
     coordinator.register(object(), bridge)
+    after_safety(coordinator.state_for(call, bridge))
     coordinator.start_call(call, bridge)
     return SimpleNamespace(call=call, bridge=bridge, client=client, state=coordinator.state_for(call, bridge))
 

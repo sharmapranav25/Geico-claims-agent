@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, checklist, coordinator, verification
 from agent.call_state import CallState
+from supervisor_helpers import safe_generate, after_safety, completion
 from agent.workflows import endings, claim_intake, review_claim, submit_claim
 
 VEHICLES = (
@@ -24,6 +25,8 @@ FIELDS = {
 
 
 class FakeBridge:
+    generate = staticmethod(safe_generate)
+
     def __init__(self):
         self.tasks = []
         self.validators = {}
@@ -47,7 +50,7 @@ class FakeBridge:
         self.validators[key] = handler
 
     def register_task_complete(self, agent, task_id, handler):
-        self.completions[task_id] = handler
+        self.completions[task_id] = completion(self, handler)
 
 
 @pytest.fixture
@@ -63,6 +66,7 @@ def api(monkeypatch):
 def registered(profile=PROFILE):
     bridge = FakeBridge()
     state = CallState('test-session', verified_profile=profile, facts=tuple((key, FIELDS[key]) for key in ('caller_name', 'caller_phone')))
+    after_safety(state)
     bridge.state = state
     claim_intake.register(object(), bridge)
     coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(
@@ -111,7 +115,7 @@ def test_collection_and_review_completion_criteria(api):
     claim_intake.start(call, bridge, bridge.state)
     bridge.completions[claim_intake.TASK_ID](call)
     assert bridge.completion_criteria[claim_intake.TASK_ID] == (
-        'Complete as soon as every field is recorded. Do not ask for extra confirmation; '
+        'Complete as soon as every field you need to ask for is recorded. Do not ask for extra confirmation; '
         'the application reads the details back next.'
     )
     assert bridge.completion_criteria[review_claim.REVIEW_TASK_ID] == 'Complete as soon as the decision is recorded.'

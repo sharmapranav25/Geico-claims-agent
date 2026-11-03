@@ -8,6 +8,7 @@ import pytest
 from guava import AcceptCall
 from guava.commands import SendInstructionCommand, SetTaskCommand
 from guava.testing import MockCall
+from supervisor_helpers import safe_generate, after_safety
 
 
 @pytest.fixture
@@ -23,6 +24,7 @@ def adapter(monkeypatch):
         spec.loader.exec_module(module)
     from agent.call_state import InMemoryStateStore
     monkeypatch.setattr(module.coordinator, 'STORE', InMemoryStateStore())
+    monkeypatch.setattr(module.SDK_BRIDGE, 'generate', safe_generate)
     return module
 
 
@@ -168,7 +170,7 @@ def test_policy_callbacks_normalize_through_sdk_dispatch(adapter, monkeypatch, n
     factory.return_value.__exit__ = Mock(return_value=False)
     monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
     call = MockCall()
-    identity.start(call, adapter.SDK_BRIDGE)
+    identity.start(call, adapter.SDK_BRIDGE, after_safety(adapter.coordinator.state_for(call, adapter.SDK_BRIDGE)))
     call.set_field('policy_number', number)
     call.set_field('caller_name', name)
     call.set_field('caller_phone', '628-268-8753')
@@ -196,7 +198,7 @@ def test_policy_validation_failure_retries_without_completion(adapter, monkeypat
     completed = Mock(wraps=adapter.agent._on_task_complete_handlers[identity.TASK_ID])
     adapter.agent._on_task_complete_handlers[identity.TASK_ID] = completed
     call = MockCall()
-    identity.start(call, adapter.SDK_BRIDGE)
+    identity.start(call, adapter.SDK_BRIDGE, after_safety(adapter.coordinator.state_for(call, adapter.SDK_BRIDGE)))
     call.set_field('policy_number', '9999')
     call.set_field('caller_name', 'Jordan Smith')
     call.set_field('caller_phone', '555-555-0100')
