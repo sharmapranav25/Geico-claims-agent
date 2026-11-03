@@ -57,6 +57,10 @@ class SDKBridge(CallBridge):
         end_call_success(call)
 
     @staticmethod
+    def hang_up(call, final_line):
+        call.hangup(final_instructions=f'Say exactly: "{final_line}"')
+
+    @staticmethod
     def get_field(call, key):
         return call.get_field(key)
 

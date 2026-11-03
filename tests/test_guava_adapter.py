@@ -242,3 +242,9 @@ def test_bridge_end_call_success_enqueues_existing_sign_off(adapter):
     command, = call._command_queue
     assert isinstance(command, SendInstructionCommand)
     assert 'End on a positive note. Say exactly: "I hope you have a great day."' in command.instruction
+
+
+def test_bridge_hang_up_speaks_the_given_final_line(adapter):
+    call = Mock()
+    adapter.SDK_BRIDGE.hang_up(call, 'Please call 911 now.')
+    call.hangup.assert_called_once_with(final_instructions='Say exactly: "Please call 911 now."')
