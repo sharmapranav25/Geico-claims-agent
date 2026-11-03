@@ -8,6 +8,7 @@ import pytest
 from guava import SuggestedAction
 from guava.commands import SetTaskCommand, SendInstructionCommand
 from guava.testing import MockCall
+from supervisor_helpers import safe_generate, after_safety
 
 
 @pytest.fixture
@@ -19,6 +20,7 @@ def adapter(monkeypatch):
     from agent.call_state import InMemoryStateStore
     monkeypatch.setattr(module.coordinator, 'STORE', InMemoryStateStore())
     monkeypatch.setattr(module.coordinator.assistance, 'check_api', Mock(return_value=[]))
+    monkeypatch.setattr(module.SDK_BRIDGE, 'generate', safe_generate)
     return module
 
 
@@ -26,6 +28,7 @@ def test_call_starts_in_verification(adapter):
     from agent.workflows import policy_lookup, identity
 
     call = MockCall()
+    after_safety(adapter.coordinator.state_for(call, adapter.SDK_BRIDGE))
     adapter.coordinator.start_call(call, adapter.SDK_BRIDGE)
     command, = call._command_queue
     assert isinstance(command, SetTaskCommand)
@@ -97,6 +100,7 @@ def test_verified_policy_context_precedes_request_task(adapter):
 def test_claim_cannot_start_without_verification(adapter):
     call = MockCall()
     call.set_field('request_type', adapter.coordinator.REPORT_OWN_LOSS)
+    after_safety(adapter.coordinator.state_for(call, adapter.SDK_BRIDGE))
     adapter.coordinator.on_task_complete(call, adapter.coordinator.REQUEST_TASK_ID, adapter.SDK_BRIDGE)
     assert call._command_queue == []
 
@@ -108,6 +112,7 @@ def test_verified_caller_routes_on_recorded_request(adapter, request_type, task)
     adapter.coordinator.on_verified(call, profile(), adapter.SDK_BRIDGE)
     assert call._command_queue[-1].task_id == adapter.coordinator.REQUEST_TASK_ID
     call.set_field('request_type', request_type)
+    after_safety(adapter.coordinator.state_for(call, adapter.SDK_BRIDGE))
     adapter.coordinator.on_task_complete(call, adapter.coordinator.REQUEST_TASK_ID, adapter.SDK_BRIDGE)
     assert call._command_queue[-1].task_id == task
 

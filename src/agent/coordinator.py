@@ -2,15 +2,15 @@
 
 from functools import partial
 
-from . import checklist
+from . import checklist, supervisor
 from .action_loop import Action, advance
 from .bridge import CallBridge, FieldDefinition
 from .call_state import InMemoryStateStore
-from .workflows import assistance, claim_intake, identity, policy_lookup, review_claim, submit_claim
+from .workflows import assistance, claim_intake, identity, policy_lookup, review_claim, safety, submit_claim
 
 DEFAULT_PURPOSE = "Verify the caller's GEICO policy, then help them report an auto loss."
 REQUEST_TASK_ID = "confirm-request"
-COMPLETION_TASKS = (REQUEST_TASK_ID, *identity.TASK_IDS, *claim_intake.TASK_IDS, *review_claim.TASK_IDS, *submit_claim.TASK_IDS, *assistance.TASK_IDS)
+COMPLETION_TASKS = (*safety.TASK_IDS, REQUEST_TASK_ID, *identity.TASK_IDS, *claim_intake.TASK_IDS, *review_claim.TASK_IDS, *submit_claim.TASK_IDS, *assistance.TASK_IDS)
 CAPTURES = {identity.TASK_ID: identity.capture, claim_intake.TASK_ID: claim_intake.capture,
             review_claim.REVIEW_TASK_ID: review_claim.capture}
 REPORT_OWN_LOSS = "report_own_loss"
@@ -58,7 +58,13 @@ def state_for(call, bridge):
 
 
 def end_call(call, bridge):
-    STORE.delete(bridge.get_session_id(call))
+    state = state_for(call, bridge)
+    with state.lock:
+        state.ended = True
+        for timer in state.speech_timers.values():
+            timer.cancel()
+        state.speech_timers.clear()
+        STORE.delete(bridge.get_session_id(call))
 
 
 def next_start_action(call, state, bridge):
@@ -68,7 +74,7 @@ def next_start_action(call, state, bridge):
     if state.result('start_verification') is not None or state.result('start_assistance') is not None:
         return None
     if check.ok:
-        return Action('start_verification', 'guava', lambda: identity.start(call, bridge))
+        return Action('start_verification', 'guava', lambda: identity.start(call, bridge, state))
     return Action('start_assistance', 'guava', lambda: assistance.start(call, bridge))
 
 
@@ -78,7 +84,20 @@ def default_routes(bridge):
 
 def run_checklist(call, state, bridge, routes=None):
     routes = routes or default_routes(bridge)
-    advance(state, lambda current: checklist.evaluate(call, current, bridge, routes))
+    with state.lock:
+        if not state.ended:
+            advance(state, lambda current: checklist.evaluate(call, current, bridge, routes))
+
+
+def on_speech(call, role, text, utterance_id, bridge):
+    state = state_for(call, bridge)
+    with state.lock:
+        if state.ended:
+            return
+        supervisor.record(state, role, text, utterance_id)
+        if role == 'caller':
+            supervisor.settle(call, state, bridge, text, utterance_id)
+        claim_intake.capture_live(call, state, bridge)
 
 
 def start_call(call, bridge: CallBridge):
@@ -87,12 +106,20 @@ def start_call(call, bridge: CallBridge):
 
 def on_task_complete(call, task_id, bridge, get_state=None, routes=None):
     state = get_state(call) if get_state is not None else state_for(call, bridge)
-    if not state.done(task_id):
-        state.mark_done(task_id)
-        capture = CAPTURES.get(task_id)
-        if capture is not None:
-            capture(call, state, bridge)
-    run_checklist(call, state, bridge, routes)
+    with state.lock:
+        if state.ended or state.stopped:
+            return
+        if state.claim_blocked and task_id not in assistance.TASK_IDS:
+            return
+        if not state.done(task_id):
+            state.mark_done(task_id)
+            capture = CAPTURES.get(task_id)
+            if capture is not None:
+                capture(call, state, bridge)
+            if task_id in (identity.TASK_ID, claim_intake.TASK_ID):
+                state.live_keys = ()
+                state.open_task = None
+        run_checklist(call, state, bridge, routes)
 
 
 def register_completions(agent, bridge, get_state=None, routes=None):
@@ -160,6 +187,7 @@ def on_intent_b(call, bridge: CallBridge) -> str | None:
     state = state_for(call, bridge)
     if state.verified_profile is not None or state.result('start_assistance') is not None:
         return CONTINUE_TASK
+    state.open_task = "intent-b-placeholder"
     bridge.set_task(call,
         "intent-b-placeholder",
         objective=(

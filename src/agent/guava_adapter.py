@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import guava
 from guava import logging_utils
 from guava.events import AgentSpeechEvent, CallerSpeechEvent
-from guava.helpers.llm import IntentRecognizer
+from guava.helpers.llm import IntentRecognizer, generate
 
 # Support both package imports and the existing direct-script CLI command.
 if __package__:
@@ -39,6 +39,10 @@ class SDKBridge(CallBridge):
                 for field in fields
             ],
         )
+
+    @staticmethod
+    def generate(prompt: str, json_schema: dict) -> str:
+        return generate(prompt, json_schema=json_schema)
 
     @staticmethod
     def send_instruction(call, instruction):
@@ -126,11 +130,15 @@ def on_session_end(call: guava.Call, event) -> None:
 
 
 def on_caller_speech(call: guava.Call, event: CallerSpeechEvent) -> None:
-    logger.info("Caller utterance: %s", event.utterance)
+    if os.environ.get('LOG_SPEECH'):
+        logger.info("Caller utterance: %s", event.utterance)
+    coordinator.on_speech(call, 'caller', event.utterance, event.utterance_id, SDK_BRIDGE)
 
 
 def on_agent_speech(call: guava.Call, event: AgentSpeechEvent) -> None:
-    logger.info("Agent utterance: %s", event.utterance)
+    if os.environ.get('LOG_SPEECH'):
+        logger.info("Agent utterance: %s", event.utterance)
+    coordinator.on_speech(call, 'agent', event.utterance, None, SDK_BRIDGE)
 
 
 def build_agent(

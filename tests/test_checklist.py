@@ -10,23 +10,17 @@ import pytest
 from agent import api_adapter, checklist, coordinator, verification
 from agent.action_loop import Action
 from agent.call_state import CallState
-from agent.workflows import assistance, claim_intake, policy_lookup, identity, review_claim, submit_claim
+from agent.workflows import assistance, claim_intake, policy_lookup, identity, review_claim, safety, submit_claim
 from test_api_outage import PROFILE, call_fields, callback_path
 from test_single_path import FakeBridge
+from supervisor_helpers import wait_closeout
 
 
 EXPECTED_CHECKS = [
-    ('1', 'No immediate safety concern'),
-    ('2', 'Clear communication'),
-    ('3', 'Clear intent and role'),
-    ('4', 'One task handled at a time'),
-    ('5', 'Within supported scope'),
-    ('6', 'Required verification confirmed'),
-    ('7', 'Required information available'),
-    ('8', 'Consistent information'),
-    ('9', 'Permission given'),
-    ('10', 'Clear successful result'),
-    ('11', 'Explain the result and close'),
+    ('1', 'Danger'), ('2', 'Intent or role'), ('3', 'Within supported scope'),
+    ('4', 'Conflicts and multiple incidents'), ('5', 'Required verification'),
+    ('6', 'Required information'), ('7', 'Consistent information'), ('8', 'Permission given'),
+    ('9', 'Clear successful result'), ('10', 'Explain the result and close'),
 ]
 
 
@@ -69,7 +63,7 @@ def test_priority_leaves_lower_check_pending(monkeypatch):
 @pytest.fixture
 def flow(monkeypatch, callback_path):
     bridge = FakeBridge()
-    call = call_fields() | {'identity_confirmed': 'yes', 'submission_decision': 'approve', 'needs_more_help': 'no'}
+    call = call_fields() | {'identity_confirmed': 'yes', 'submission_decision': 'approve', 'needs_more_help': 'no', 'safety_answer': 'safe'}
     call.pop('request_type')
     client = Mock()
     client.get_policy.return_value = PROFILE
@@ -90,6 +84,7 @@ def finish(flow, *tasks):
 
 def happy_path(flow):
     coordinator.start_call(flow.call, flow.bridge)
+    finish(flow, safety.TASK_ID)
     finish(flow, identity.TASK_ID, identity.CONFIRM_TASK_ID)
     flow.call['request_type'] = coordinator.REPORT_OWN_LOSS
     finish(flow, coordinator.REQUEST_TASK_ID, claim_intake.TASK_ID,
@@ -99,6 +94,7 @@ def happy_path(flow):
 def outage_path(flow):
     flow.client.list_policies.side_effect = api_adapter.APIUnavailableError('offline')
     coordinator.start_call(flow.call, flow.bridge)
+    finish(flow, safety.TASK_ID)
     finish(flow, assistance.OFFER_TASK_ID, assistance.CALLBACK_OFFER_TASK_ID, assistance.CALLBACK_TASK_ID)
 
 
@@ -111,7 +107,7 @@ def test_evaluate_sends_no_commands_or_api_calls(flow):
     routes = coordinator.default_routes(flow.bridge)
     for _ in range(2):
         action = checklist.evaluate(flow.call, flow.state, flow.bridge, routes)
-        assert action.name == 'check_api'
+        assert action.name == 'safety_question'
     assert flow.bridge.tasks == flow.bridge.instructions == flow.bridge.infos == []
     flow.factory.assert_not_called()
     assert flow.state.results == {}
@@ -119,6 +115,7 @@ def test_evaluate_sends_no_commands_or_api_calls(flow):
 
 def test_completed_handler_waits_without_restarting(flow):
     coordinator.start_call(flow.call, flow.bridge)
+    finish(flow, safety.TASK_ID)
     finish(flow, identity.TASK_ID)
     commands = (list(flow.bridge.tasks), list(flow.bridge.instructions), list(flow.bridge.infos))
     calls, results = list(flow.client.mock_calls), dict(flow.state.results)
@@ -137,13 +134,13 @@ def test_extra_check_runs_after_verification_in_registered_flow(flow, monkeypatc
         return Action('extra_situation', 'guava', lambda: bridge.send_instruction(call, 'Extra situation.'))
 
     checks = checklist.CHECKS
-    monkeypatch.setattr(checklist, 'CHECKS', checks[:6] + (checklist.Check('6a', 'Extra situation', extra),) + checks[6:])
+    monkeypatch.setattr(checklist, 'CHECKS', checks[:5] + (checklist.Check('5a', 'Extra situation', extra),) + checks[5:])
     with caplog.at_level('INFO', logger=checklist.__name__):
         happy_path(flow)
     sequence = selected(caplog)
-    position = sequence.index(('6a', 'extra_situation'))
-    assert sequence[position - 1] == ('5', 'start_request')
-    assert sequence[position + 1] == ('7', 'save_draft')
+    position = sequence.index(('5a', 'extra_situation'))
+    assert sequence[position - 1] == ('3', 'start_request')
+    assert sequence[position + 1] == ('6', 'write_summary')
     assert flow.bridge.instructions == ['Extra situation.']
     assert flow.state.result('extra_situation').ok
     assert flow.bridge.tasks[-1].task_id == 'end-call-success'
@@ -153,9 +150,9 @@ def test_happy_path_check_action_sequence(flow, caplog):
     with caplog.at_level('INFO', logger=checklist.__name__):
         happy_path(flow)
     assert selected(caplog) == [
-        ('6', 'check_api'), ('6', 'start_verification'), ('6', 'start_confirm'), ('6', 'fetch_policy'),
-        ('6', 'announce_verification'), ('5', 'start_request'), ('7', 'save_draft'),
-        ('7', 'start_review'), ('9', 'submit_claim'), ('10', 'announce_submission'), ('11', 'close_call'),
+        ('1', 'safety_question'), ('5', 'check_api'), ('5', 'start_verification'), ('5', 'start_confirm'), ('5', 'fetch_policy'),
+        ('5', 'announce_verification'), ('3', 'start_request'), ('6', 'write_summary'), ('6', 'final_consistency'), ('6', 'save_draft'),
+        ('6', 'start_review'), ('8', 'submit_claim'), ('9', 'announce_submission'), ('10', 'close_call'),
     ]
 
 
@@ -163,8 +160,8 @@ def test_outage_check_action_sequence(flow, caplog):
     with caplog.at_level('INFO', logger=checklist.__name__):
         outage_path(flow)
     assert selected(caplog) == [
-        ('6', 'check_api'), ('6', 'start_assistance'), ('5', 'answer_offer'),
-        ('5', 'answer_callback_offer'), ('5', 'save_callback'), ('5', 'announce_callback'),
+        ('1', 'safety_question'), ('5', 'check_api'), ('5', 'start_assistance'), ('3', 'answer_offer'),
+        ('3', 'answer_callback_offer'), ('3', 'save_callback'), ('3', 'announce_callback'),
     ]
 
 
@@ -213,7 +210,7 @@ def test_source_boundaries_and_completion_inventory():
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
                     if isinstance(target, ast.Attribute) and target.attr == 'verified_profile':
-                        assert path.name == 'identity.py'
+                        assert path.name in {'identity.py', 'checklist.py'}
             if isinstance(node, ast.ImportFrom):
                 names = [alias.name for alias in node.names]
                 if 'advance' in names:
@@ -232,7 +229,7 @@ def test_source_boundaries_and_completion_inventory():
             elif isinstance(node, ast.Call) and path.parent.name == 'workflows':
                 assert not (isinstance(node.func, ast.Attribute) and node.func.attr == 'register_task_complete')
                 assert not (isinstance(node.func, ast.Name) and node.func.id == 'register_task_complete')
-    for workflow in (identity, claim_intake, review_claim, submit_claim, assistance):
+    for workflow in (identity, claim_intake, review_claim, safety, submit_claim, assistance):
         assert set(workflow.TASK_IDS) <= set(coordinator.COMPLETION_TASKS)
 
 
@@ -240,9 +237,10 @@ def test_volunteered_request_skips_start_request(flow, caplog):
     flow.call['request_type'] = coordinator.REPORT_OWN_LOSS
     with caplog.at_level('INFO', logger=checklist.__name__):
         coordinator.start_call(flow.call, flow.bridge)
+        finish(flow, safety.TASK_ID)
         finish(flow, identity.TASK_ID, identity.CONFIRM_TASK_ID, claim_intake.TASK_ID,
                review_claim.REVIEW_TASK_ID, submit_claim.SUBMITTED_TASK_ID)
-    assert ('5', 'start_request') not in selected(caplog)
+    assert ('3', 'start_request') not in selected(caplog)
     assert coordinator.REQUEST_TASK_ID not in [task.task_id for task in flow.bridge.tasks]
     assert flow.bridge.tasks[-1].task_id == 'end-call-success'
 
@@ -250,14 +248,15 @@ def test_volunteered_request_skips_start_request(flow, caplog):
 def test_correction_repeats_save_and_review(flow, caplog):
     with caplog.at_level('INFO', logger=checklist.__name__):
         coordinator.start_call(flow.call, flow.bridge)
+        finish(flow, safety.TASK_ID)
         finish(flow, identity.TASK_ID, identity.CONFIRM_TASK_ID)
         flow.call['request_type'] = coordinator.REPORT_OWN_LOSS
         finish(flow, coordinator.REQUEST_TASK_ID, claim_intake.TASK_ID)
         flow.call.update(submission_decision='change', corrected_field='location', corrected_value='Oak Street')
         finish(flow, review_claim.REVIEW_TASK_ID)
     sequence = selected(caplog)
-    assert sequence.count(('7', 'save_draft')) == sequence.count(('7', 'start_review')) == 2
-    assert ('9', 'submit_claim') not in sequence
+    assert sequence.count(('6', 'save_draft')) == sequence.count(('6', 'start_review')) == 2
+    assert ('8', 'submit_claim') not in sequence
 
 
 def test_timeout_checks_submission_in_check_ten(flow, caplog):
@@ -266,6 +265,6 @@ def test_timeout_checks_submission_in_check_ten(flow, caplog):
     with caplog.at_level('INFO', logger=checklist.__name__):
         happy_path(flow)
     sequence = selected(caplog)
-    index = sequence.index(('10', 'check_submission'))
-    assert sequence[index - 1] == ('9', 'submit_claim')
-    assert sequence[index + 1] == ('10', 'announce_submission')
+    index = sequence.index(('9', 'check_submission'))
+    assert sequence[index - 1] == ('8', 'submit_claim')
+    assert sequence[index + 1] == ('9', 'announce_submission')

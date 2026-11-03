@@ -47,16 +47,25 @@ def identity_fields(spell_name=False):
     ]
 
 
-def start(call, bridge):
-    from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
+def start(call, bridge, state=None):
+    from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE, state_for
+
+    state = state if state is not None else state_for(call, bridge)
+    _start_live(call, state, bridge)
 
     bridge.set_task(call, TASK_ID, fields=identity_fields(),
         completion_criteria='Complete as soon as the policy number, name and phone are recorded. Do not read them back or re-confirm them.',
-        objective="Greet the caller, then collect the policy number, name and phone using each field's question wording exactly. "
+        objective="Do not greet the caller again. Collect the policy number, name and phone using each field's question wording exactly. "
         "If the caller already gave one, record it and skip that question. Ask only the three identity questions. "
         "Do not ask about the loss or discuss it until the application tells you to. Say nothing about what the policy contains. "
         "Never use the phrase 'against the policy'. This demo supports the policyholder only. "
         "If the caller lacks their policy number, explain this demo cannot look it up without it. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)
+
+
+def _start_live(call, state, bridge):
+    state.open_task = TASK_ID
+    state.live_keys = ('description', 'location', 'loss_type', 'stated_time')
+    state.live_seen = {key: bridge.get_field(call, key) for key in state.live_keys}
 
 
 def capture(call, state, bridge):
@@ -127,6 +136,7 @@ def _retry_or_fail(call, state, bridge, spell_name):
             state.spell_name = state.spell_name or spell_name
             state.clear_done(TASK_ID, CONFIRM_TASK_ID)
             logger.info('Policy identity retry')
+            _start_live(call, state, bridge)
             bridge.set_task(call, TASK_ID, say=[RETRY_LINE], fields=identity_fields(state.spell_name),
                 objective="Collect the policy number, name and phone again using each field's question wording exactly. "
                 "Ask for all three again and do not reuse earlier answers. Ask only the three identity questions. "
