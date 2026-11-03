@@ -27,6 +27,9 @@ FIELDS = {
 class FakeBridge:
     generate = staticmethod(safe_generate)
 
+    def get_session_id(self, call):
+        return 'validator-session'
+
     def __init__(self):
         self.tasks = []
         self.validators = {}
@@ -311,6 +314,7 @@ def test_skipped_required_fact_never_saves(api, missing):
 
 def test_optional_loss_type_stays_none(api):
     bridge = registered()
+    bridge.generate = Mock(side_effect=RuntimeError('offline'))
     call = dict(FIELDS)
     call.pop('loss_type')
     bridge.completions[claim_intake.TASK_ID](call)
@@ -419,7 +423,7 @@ def test_review_uses_summary_without_changing_claim_fields(summary, loss_type):
     ('collision', ' This was a collision.'),
     ('theft', ' This was a theft.'),
     ('weather', ' This was weather damage.'),
-    ('other', ''),
+    ('other', " I've put the type of loss down as other."),
     (None, ''),
 ])
 def test_review_loss_wording(loss_type, loss):

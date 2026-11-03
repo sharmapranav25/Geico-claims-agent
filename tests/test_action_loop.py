@@ -331,7 +331,7 @@ def test_completing_twice_does_not_repeat_actions(api, call, workflow):
         handler = bridge.completions[claim_intake.TASK_ID]
     handler(call)
     handler(call)
-    assert len(state.results) == (1 if workflow == 'policy' else 4)
+    assert len(state.results) == (1 if workflow == 'policy' else 5)
     assert client.get_policy.call_count == 0
     assert client.update_claim_draft.call_count == (workflow == 'claim')
     bridge.set_task.assert_called_once()

@@ -16,17 +16,19 @@ POLICY_QUESTION = 'What is your policy number?'
 NAME_QUESTION = 'What is your full name?'
 SPELL_NAME_QUESTION = 'Please spell your full name for me.'
 PHONE_QUESTION = 'What is your phone number?'
+HELP_QUESTION = 'How can I help you today?'
 RETRY_LINE = "Hmm, I couldn't verify those details. Let's try that one more time."
 FAILED_LINE = "I'm sorry, I still couldn't verify those details, so I can't open a claim on this call."
 VERIFIED_LINE = "Thanks so much, you're all verified."
 
 
-def identity_fields(spell_name=False):
+def identity_fields(spell_name=False, ask_request=False):
     from ..coordinator import REPORT_OWN_LOSS, OTHER_REQUEST
-    from .claim_intake import LOSS_TYPES
 
     volunteer = ' Record this only if the caller volunteers it. Never ask for it.'
-    return [
+    request = [FieldDefinition('request_type', 'What the caller wants: report_own_loss if they are reporting a loss or opening a claim, otherwise other_request.',
+                               question=HELP_QUESTION, field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST), required=False)] if ask_request else []
+    return request + [
         FieldDefinition('policy_number', 'The policy number, digits only. Do not record letters.',
                         question=POLICY_QUESTION, field_type='digit_sequence', sensitive=True),
         FieldDefinition('caller_name', 'Have the caller spell it letter by letter, then record it as normal words, like Jessica Brown.'
@@ -34,8 +36,8 @@ def identity_fields(spell_name=False):
                         question=SPELL_NAME_QUESTION if spell_name else NAME_QUESTION),
         FieldDefinition('caller_phone', "Ask the caller for their own phone number on the policy.",
                         question=PHONE_QUESTION, field_type='digit_sequence', sensitive=True),
-        FieldDefinition('request_type', 'The request type.' + volunteer, required=False,
-                        field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST)),
+        *([] if ask_request else [FieldDefinition('request_type', 'The request type.' + volunteer, required=False,
+                                                  field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST))]),
         FieldDefinition('description', "What happened. Record what happened in the caller's own words, for example 'my mother', not 'the caller's mother'." + volunteer, required=False),
         FieldDefinition('location', 'Where it happened.' + volunteer, required=False),
         FieldDefinition('loss_type', 'The kind of loss.' + volunteer, required=False,
@@ -51,7 +53,7 @@ def start(call, bridge, state=None):
     state = state if state is not None else state_for(call, bridge)
     _start_live(call, state, bridge)
 
-    bridge.set_task(call, TASK_ID, fields=identity_fields(),
+    bridge.set_task(call, TASK_ID, fields=identity_fields(ask_request=True),
         completion_criteria='Complete as soon as the policy number, name and phone are recorded. Do not read them back or re-confirm them.',
         objective="Do not greet the caller again. Collect the policy number, name and phone using each field's question wording exactly. "
         "If the caller already gave one, record it and skip that question. Ask only the three identity questions. "

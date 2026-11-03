@@ -41,6 +41,7 @@ def _ack_field(question='Is there anything else you need?'):
 def start(call, bridge, state, name, task_id, say=(), objective=''):
     state.ending = name
     question = '' if any('anything else' in line.lower() for line in say) else 'Is there anything else you need?'
+    objective += ' When the caller answers, record it and say nothing at all. Do not say goodbye; the application says the final line.'
     bridge.set_task(call, task_id, say=say, objective=objective,
                     fields=[_ack_field(question)],
                     completion_criteria='Complete as soon as the answer is recorded.')

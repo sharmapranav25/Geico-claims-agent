@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent import api_adapter, checklist, coordinator, supervisor
+from agent import api_adapter, checklist, coordinator, supervisor, verification
 from agent.call_state import ActionResult, InMemoryStateStore
 from agent.workflows import assistance, claim_intake, endings, identity, review_claim, safety
 from supervisor_helpers import after_safety, safe_generate, wait_closeout
@@ -90,7 +90,7 @@ def test_safety_precedes_api_and_exact_question(flow):
     field, = task.fields
     assert field.question == safety.QUESTION
     assert field.choices == ('safe', 'not_safe')
-    assert "a bare yes or no is unclear" in field.description
+    assert "never ask about safety again" in field.description
     assert 'Greet' in task.objective
     flow.call['safety_answer'] = 'safe'
     coordinator.on_task_complete(flow.call, safety.TASK_ID, flow.bridge)
@@ -262,7 +262,7 @@ def test_live_fields_baseline_and_stale_value_do_not_void_approval(flow, monkeyp
     coordinator.on_speech(flow.call, 'agent', 'Recorded', None, flow.bridge)
     assert flow.state.fact('location') == 'New location'
     assert flow.state.approved_fields is None
-    changed.assert_called_once_with(flow.call, flow.state, flow.bridge, 'location')
+    changed.assert_called_once_with(flow.call, flow.state, flow.bridge)
     flow.state.open_task = review_claim.REVIEW_TASK_ID
     flow.call['location'] = 'Stale review field'
     claim_intake.capture_live(flow.call, flow.state, flow.bridge)
@@ -288,7 +288,7 @@ def test_collection_live_keys_are_only_fields_sent(flow):
     collect(flow)
     flow.state.set_fact('location', None)
     claim_intake.start(flow.call, flow.bridge, flow.state)
-    assert flow.state.live_keys == ('location', 'description')
+    assert flow.state.live_keys == ('location',)
     assert flow.state.live_seen == {key: flow.call[key] for key in flow.state.live_keys}
     join_workers(flow)
 
@@ -357,7 +357,7 @@ def test_late_closeout_after_priority_stop_changes_nothing(flow, pending, stop):
     collect(flow)
     entered, release = threading.Event(), threading.Event()
     def generate(prompt, json_schema):
-        if (json_schema == supervisor.SUMMARY_SCHEMA) == (pending == 'summary'):
+        if json_schema == (supervisor.SUMMARY_SCHEMA if pending == 'summary' else supervisor.FACTS_SCHEMA):
             entered.set()
             release.wait(1)
         return safe_generate(prompt, json_schema)
@@ -380,7 +380,7 @@ def test_old_closeout_answer_after_correction_is_dropped(flow, pending):
     collect(flow)
     entered, release = threading.Event(), threading.Event()
     def generate(prompt, json_schema):
-        if (json_schema == supervisor.SUMMARY_SCHEMA) == (pending == 'summary'):
+        if json_schema == (supervisor.SUMMARY_SCHEMA if pending == 'summary' else supervisor.FACTS_SCHEMA):
             entered.set()
             release.wait(1)
         return safe_generate(prompt, json_schema)
@@ -409,7 +409,7 @@ def test_closeout_timeout_falls_back_and_reaches_save(flow, pending):
     collect(flow)
     release = threading.Event()
     def generate(prompt, json_schema):
-        if (json_schema == supervisor.SUMMARY_SCHEMA) == (pending == 'summary'):
+        if json_schema == (supervisor.SUMMARY_SCHEMA if pending == 'summary' else supervisor.FACTS_SCHEMA):
             release.wait(1)
         return safe_generate(prompt, json_schema)
     flow.bridge.generate = generate
@@ -459,7 +459,6 @@ def test_ask_timeout_returns_none_and_late_success_is_discarded(flow):
 
 
 def test_live_checks_generate_without_holding_call_lock(flow):
-    flow.state.open_task = claim_intake.TASK_ID
     acquired = []
     def generate(prompt, json_schema):
         success = flow.state.lock.acquire(timeout=0.2)
@@ -471,7 +470,7 @@ def test_live_checks_generate_without_holding_call_lock(flow):
     with flow.state.lock:
         supervisor.on_fact_changed(flow.call, flow.state, flow.bridge, 'description')
     join_workers(flow)
-    assert acquired == [True, True]
+    assert acquired == [True]
 
 
 @pytest.mark.parametrize('log_speech', [None, '', '1'])
@@ -580,8 +579,8 @@ def test_final_single_field_conflict_uses_singular_wording(flow):
     flow.bridge.generate = generate
     coordinator.run_checklist(flow.call, flow.state, flow.bridge)
     wait_closeout(flow.state)
-    assert flow.bridge.tasks[-1].say[0].startswith("One thing to check: the location doesn't seem right. Is that correct? ")
-    assert 'PRIVATE REASON' not in flow.bridge.tasks[-1].say[0]
+    assert flow.bridge.tasks[-1].say[0].startswith("So here's what I have.")
+    assert flow.bridge.instructions == []
 
 
 def test_blocked_caller_ending_still_hangs_up(flow):

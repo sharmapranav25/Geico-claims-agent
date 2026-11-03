@@ -25,7 +25,6 @@ def claim_facts(state):
 
 def start(call, bridge, state, say=()):
     from ..coordinator import CALL_ENDING_RULE, KEEP_CONTEXT_RULE
-    from .. import supervisor
 
     profile = state.verified_profile
     if len(profile.vehicles) == 1:

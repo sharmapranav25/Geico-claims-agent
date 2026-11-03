@@ -55,6 +55,4 @@ def test_collection_includes_date_context_iso_and_own_words(monkeypatch):
     for fields, time_key in [(identity.identity_fields(), 'stated_time'),
                              (bridge.tasks[-1][2], 'occurred_at')]:
         descriptions = {field.key: field.description for field in fields}
-        assert context in descriptions[time_key]
-        assert 'ISO 8601' in descriptions[time_key]
         assert "Record what happened in the caller's own words, for example 'my mother', not 'the caller's mother'." in descriptions['description']

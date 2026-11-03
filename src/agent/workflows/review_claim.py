@@ -8,7 +8,6 @@ from . import claim_intake
 
 logger = logging.getLogger(__name__)
 REVIEW_TASK_ID = 'review-claim'
-TASK_IDS = (REVIEW_TASK_ID,)
 MAX_CORRECTIONS = 5
 LOSS_LINES = {'collision': ' This was a collision.', 'theft': ' This was a theft.', 'weather': ' This was weather damage.'}
 
@@ -36,7 +35,7 @@ def start_review(call, bridge, state):
                 FieldDefinition('corrected_field', 'The detail to change.', field_type='multiple_choice',
                                 choices=claim_intake.CLAIM_FIELDS, required=False),
                 FieldDefinition('corrected_value', 'The new value or additional details.', required=False)],
-        objective="Record approve only if the caller clearly says to file it. If they want to change a detail, record change plus which detail and its new value. "
+        objective="Record approve if the caller says to file it or gives any clear yes, such as yes, sure, go ahead or that is good. If they want to change a detail, record change plus which detail and its new value. "
         "If they want to add to what happened, record add and put the new details in corrected_value. "
         "If they only say no to adding, ask 'Should I file this claim?' and record their answer. Silence or uncertainty is decline. "
         "Do not say a claim was submitted. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)

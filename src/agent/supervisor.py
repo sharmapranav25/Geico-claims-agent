@@ -17,7 +17,7 @@ MULTIPLE_NUDGE = (
     'Switch only to the selected allowed task. Do not combine separate incidents; prioritize safety.'
 )
 POINT_QUESTIONS = {'what_happened': 'what happened', 'how': 'how it happened',
-                   'owner_role': "the policy owner's role", 'other_party_actions': 'what the other party did'}
+                   'owner_role': 'what you were doing at the time', 'other_party_actions': 'what the other party did'}
 
 
 def _schema(properties):
@@ -84,7 +84,7 @@ def check_line(answer):
 
 
 def check_facts(answer):
-    return _valid(answer, FACTS_SCHEMA) and (not answer['inconsistent'] or bool(answer['fields']))
+    return _valid(answer, FACTS_SCHEMA) and (not answer['inconsistent'] or len(set(answer['fields'])) >= 2)
 
 
 def _valid_description(answer):
@@ -219,19 +219,15 @@ def on_fact_changed(call, state, bridge, key):
 def check_description(call, state, bridge):
     from . import coordinator
 
-    with state.lock:
-        if _inactive(state) or state.open_task != claim_intake.TASK_ID:
-            return
-        description = state.fact('description')
+    description = state.fact('description')
 
     def check_details():
         with state.lock:
-            if _inactive(state) or state.open_task != claim_intake.TASK_ID:
+            if _inactive(state):
                 return
         answer = ask(bridge, DESCRIPTION_PROMPT + json.dumps(description), DESCRIPTION_SCHEMA, _valid_description)
         with state.lock:
-            if (answer is None or _inactive(state) or state.open_task != claim_intake.TASK_ID
-                    or description != state.fact('description')):
+            if _inactive(state):
                 return
             for point, label in POINT_QUESTIONS.items():
                 if point == 'other_party_actions' and not answer['other_party_involved']:
@@ -257,7 +253,7 @@ def _start_closeout(call, state, bridge, summary):
             if _inactive(state) or generation != state.closeout_generation:
                 return
         if summary:
-            answer = ask(bridge, SUMMARY_PROMPT + json.dumps(facts), SUMMARY_SCHEMA, check_summary)
+            answer = ask(bridge, SUMMARY_PROMPT + json.dumps({'description': facts['description']}), SUMMARY_SCHEMA, check_summary)
         else:
             answer = ask(bridge, FACTS_PROMPT + json.dumps(facts), FACTS_SCHEMA, check_facts)
         with state.lock:

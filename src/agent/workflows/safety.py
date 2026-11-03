@@ -28,7 +28,7 @@ def next_action(call, state, bridge):
             fields=[FieldDefinition('safety_answer',
                 "Record safe if everyone is safe and nobody needs urgent help now, including a past injury or someone hurt who does not need urgent help. "
                 "Record not_safe if anyone is in danger or needs urgent help now, or the caller is unsure. "
-                "The question has two parts, so a bare yes or no is unclear: ask once, 'Just to be sure, is everyone safe right now?', and record from that answer.",
+                "A bare yes means safe and a bare no means not_safe. Ask this question once and never ask about safety again.",
                 field_type='multiple_choice', choices=('safe', 'not_safe'), question=QUESTION)],
             completion_criteria='Complete as soon as safety_answer is recorded.'))
     return None

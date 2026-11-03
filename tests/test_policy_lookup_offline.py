@@ -74,8 +74,8 @@ def test_verification_with_fake_bridge(api, name, phone, task):
     identity.start(call, bridge, bridge.state)
     assert bridge.tasks[0][1] == identity.TASK_ID
     fields = bridge.tasks[0][3]
-    assert [f.key for f in fields[:3]] == ['policy_number', 'caller_name', 'caller_phone']
-    assert all(f.required for f in fields[:3])
+    assert [f.key for f in fields[:4]] == ['request_type', 'policy_number', 'caller_name', 'caller_phone']
+    assert all(f.required for f in fields[1:4])
     assert bridge.validators['policy_number'](call, call['policy_number']) is True
     bridge.completions[identity.TASK_ID](call)
     call['identity_confirmed'] = 'yes'
