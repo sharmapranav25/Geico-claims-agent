@@ -51,6 +51,7 @@ class FakeBridge:
         self.validators = {}
         self.completions = {}
         self.actions = {}
+        self.hang_up = Mock()
 
     def set_task(self, call, task_id, objective, todos=(), *, fields=(), say=(), completion_criteria=""):
         self.tasks.append(SimpleNamespace(task_id=task_id, objective=objective, fields=fields, say=say, completion_criteria=completion_criteria))

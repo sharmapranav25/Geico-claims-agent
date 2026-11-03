@@ -14,8 +14,10 @@ from agent.workflows import assistance, claim_intake, policy_lookup, identity, r
 
 
 class FakeBridge(BaseBridge):
-    def end_call_success(self, call):
-        self.tasks.append(SimpleNamespace(task_id='end-call-success'))
+    def __init__(self):
+        super().__init__()
+        self.hang_up = Mock(side_effect=lambda call, line: self.tasks.append(
+            SimpleNamespace(task_id='hang-up', final_line=line)))
 
 
 COMBINATIONS = list(itertools.product(
@@ -32,7 +34,7 @@ def run_call(monkeypatch, options):
         'caller_name': 'Michael Johnson' if name_ok else 'Jordan Smith',
         'caller_phone': '628-268-8753' if phone_ok else '555-555-0100',
         'identity_confirmed': 'yes', 'wants_representative': wants_rep, 'wants_callback': wants_callback,
-        'submission_decision': decision, 'needs_more_help': needs_more_help,
+        'submission_decision': decision, 'ending_ack': 'done' if needs_more_help == 'no' else 'more',
     }
     call.pop('request_type', None)
     client = Mock()
@@ -156,7 +158,7 @@ def test_every_decision_selects_one_path(monkeypatch, callback_path, options):
                     elif not submit_ok:
                         expected += ['claim-submit-failed']
                     else:
-                        expected += ['claim-submitted', 'end-call-success' if needs_more_help == 'no' else 'claim-more-help']
+                        expected += ['claim-submitted', 'hang-up' if needs_more_help == 'no' else 'ending-more']
     assert tasks == expected
     assert 'collect-claim' not in tasks or (api_up and found and name_ok and phone_ok)
     assert not ('verify-policy' in tasks and 'assistance-offer' in tasks)
@@ -283,7 +285,7 @@ def test_intent_b_does_not_replace_active_task(callback_path, stage):
 def test_new_branches_through_registered_handlers(monkeypatch, callback_path, branch):
     bridge, call = FakeBridge(), call_fields()
     call.pop('request_type')
-    call.update(identity_confirmed='yes', submission_decision='approve', needs_more_help='no')
+    call.update(identity_confirmed='yes', submission_decision='approve', ending_ack='done')
     client = Mock()
     client.get_policy.return_value = PROFILE
     client.submit_claim_draft.return_value = SimpleNamespace(claim_number='CLM-BRANCH')

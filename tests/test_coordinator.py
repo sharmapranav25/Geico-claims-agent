@@ -59,7 +59,7 @@ def profile():
 @pytest.mark.parametrize('stage,expected', [
     ('unverified', 'Known facts: the caller is not verified, so no policy or claim information can be shared.'),
     ('verified', 'Known facts: the claim has not been submitted. The details are still being collected and will be read back for approval first.'),
-    ('submitted', 'Known facts: the claim has been submitted. Its claim number is CLM-A1B2C3D4.'),
+    ('submitted', 'Known facts: the claim has been submitted. Its claim number is C, L, M, A, 1, B, 2, C, 3, D, 4. Say the claim number character by character.'),
 ])
 def test_question_answers_only_from_state(adapter, stage, expected):
     from agent.call_state import ActionResult
@@ -170,5 +170,5 @@ def test_question_after_uncertain_submission(adapter, found):
         state.record(ActionResult('check_submission', 'api', True, SimpleNamespace(claim_number='CLM-FOUND')))
     answer = adapter.coordinator.on_question(call, 'Was it filed?', adapter.SDK_BRIDGE)
     assert 'has not been submitted' not in answer
-    assert ('CLM-FOUND' in answer) is found
+    assert ('C, L, M, F, O, U, N, D' in answer) is found
     assert ('not confirmed whether' in answer) is (not found)

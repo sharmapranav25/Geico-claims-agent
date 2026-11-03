@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .workflows import assistance, claim_intake, identity, review_claim, submit_claim
+from .workflows import endings, assistance, claim_intake, identity, review_claim, submit_claim
 
 logger = logging.getLogger(__name__)
 PASS = object()   # The check is satisfied; continue to the next one.
@@ -108,6 +108,8 @@ def check_close(call, state, bridge, routes):
 
 
 CHECKS = (
+    Check('ending', 'Acknowledge the outcome and close',
+          lambda call, state, bridge, routes: endings.next_action(call, state, bridge) if state.ending else PASS),
     Check('1', 'No immediate safety concern', check_safety),
     Check('2', 'Clear communication', check_communication),
     Check('3', 'Clear intent and role', check_intent_and_role),

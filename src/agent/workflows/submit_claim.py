@@ -3,10 +3,9 @@
 import logging
 from uuid import uuid4
 
-from .. import api_adapter, verification
+from .. import api_adapter, speech, verification
 from ..action_loop import Action
-from ..bridge import FieldDefinition
-from . import claim_intake
+from . import claim_intake, endings
 
 logger = logging.getLogger(__name__)
 SUBMITTED_TASK_ID = 'claim-submitted'
@@ -24,7 +23,7 @@ def next_submit_action(call, state, bridge):
         reviewed = state.result('start_review')
         fields = claim_intake.claim_facts(state)
         if not verification.approval_is_valid(state.review_decision, reviewed.data if reviewed else None, fields):
-            return Action('announce_not_submitted', 'guava', lambda: _announce_not_submitted(call, bridge))
+            return Action('announce_not_submitted', 'guava', lambda: _announce_not_submitted(call, bridge, state))
         state.approved_fields = fields
         if state.submission_reference is None:
             state.submission_reference = f'sub-{uuid4().hex}'
@@ -40,7 +39,7 @@ def next_submit_action(call, state, bridge):
 
     claim = submitted_claim(state)
     if claim is not None:
-        return Action('announce_submission', 'guava', lambda: _announce_claim(call, bridge, claim.claim_number))
+        return Action('announce_submission', 'guava', lambda: _announce_claim(call, bridge, state, claim.claim_number))
     if submission_uncertain(state):
         checked = state.result('check_submission')
         if checked is None:
@@ -54,8 +53,8 @@ def next_submit_action(call, state, bridge):
                     return api.submit_claim_draft(state.verified_profile.policy_number,
                                                   submission_reference=state.submission_reference)
             return Action('retry_submit', 'api', retry_submit, (api_adapter.APIError,))
-        return Action('announce_submission', 'guava', lambda: _announce_status_unknown(call, bridge))
-    return Action('announce_submission', 'guava', lambda: _announce_submit_failed(call, bridge))
+        return Action('announce_submission', 'guava', lambda: _announce_status_unknown(call, bridge, state))
+    return Action('announce_submission', 'guava', lambda: _announce_submit_failed(call, bridge, state))
 
 
 def submitted_claim(state):
@@ -73,58 +72,46 @@ def submission_uncertain(state):
             and submitted_claim(state) is None)
 
 
-def _announce_status_unknown(call, bridge):
+def _announce_status_unknown(call, bridge, state):
     from ..coordinator import CALL_ENDING_RULE
 
     logger.info('Claim submission status unknown')
-    bridge.set_task(call, 'claim-status-unknown',
+    endings.start(call, bridge, state, 'status_unknown', 'claim-status-unknown',
         say=["I can't confirm whether your claim was filed, so please don't file it again yet. No claim number is available right now."],
         objective='Do not say it succeeded or failed. Do not offer to file again. ' + CALL_ENDING_RULE)
 
 
-def _announce_claim(call, bridge, claim_number):
+def _announce_claim(call, bridge, state, claim_number):
     from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
 
     logger.info('Claim submitted')
-    bridge.set_task(call, SUBMITTED_TASK_ID,
-        say=[f'Your claim has been submitted. Your claim number is {claim_number}. {PORTAL_LINE} Is there anything else you need?'],
-        fields=[FieldDefinition('needs_more_help', 'Whether the caller needs anything else.',
-                                field_type='multiple_choice', choices=('yes', 'no'))],
+    spelled = speech.spell_out(claim_number)
+    endings.start(call, bridge, state, 'filed', SUBMITTED_TASK_ID,
+        say=[f'All done, your claim has been filed. Your claim number is {spelled}. {PORTAL_LINE} Is there anything else I can help you with?'],
         objective='Record whether the caller needs anything else. Do not decide fault, coverage or payment. '
                   + KEEP_CONTEXT_RULE + CALL_ENDING_RULE,
     )
 
 
-def _announce_not_submitted(call, bridge):
+def _announce_not_submitted(call, bridge, state):
     from ..coordinator import CALL_ENDING_RULE
 
     logger.info('Claim not submitted')
-    bridge.set_task(call, 'claim-not-submitted', objective=(
+    endings.start(call, bridge, state, 'declined', 'claim-not-submitted', objective=(
         'Nothing was submitted and there is no claim number. Explain this without pressure. The details are saved '
         'as a draft, which is not a claim. Do not promise a resume text or that the portal can finish it. ' + CALL_ENDING_RULE
     ))
 
 
-def _announce_submit_failed(call, bridge):
+def _announce_submit_failed(call, bridge, state):
     from ..coordinator import CALL_ENDING_RULE
 
     logger.info('Claim submission failed')
-    bridge.set_task(call, 'claim-submit-failed', objective=(
+    endings.start(call, bridge, state, 'submit_failed', 'claim-submit-failed', objective=(
         'The claim could not be submitted and there is no claim number. Say so honestly. '
         'Do not claim to transfer the caller. ' + CALL_ENDING_RULE
     ))
 
 
 def next_close_action(call, state, bridge):
-    from ..coordinator import CALL_ENDING_RULE
-
-    if state.result('close_call') is not None:
-        return None
-    if bridge.get_field(call, 'needs_more_help') == 'no':
-        return Action('close_call', 'guava', lambda: bridge.end_call_success(call))
-    return Action('close_call', 'guava', lambda: bridge.set_task(call, 'claim-more-help', objective=(
-        'This demo only opens new loss reports. Explain that limit without inventing contact details '
-        'or claiming to transfer the caller. ' + CALL_ENDING_RULE
-    )))
-
-
+    return endings.next_action(call, state, bridge)

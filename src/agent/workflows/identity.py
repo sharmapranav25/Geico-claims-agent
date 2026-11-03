@@ -1,12 +1,11 @@
 """Caller identity collection, read-back, retries and verification."""
 
 import logging
-from datetime import datetime
 
-from .. import verification
+from .. import speech, verification
 from ..action_loop import Action
 from ..bridge import FieldDefinition
-from . import policy_lookup
+from . import endings, policy_lookup
 
 logger = logging.getLogger(__name__)
 TASK_ID = 'verify-policy'
@@ -17,9 +16,9 @@ POLICY_QUESTION = 'What is your policy number?'
 NAME_QUESTION = 'What is your full name?'
 SPELL_NAME_QUESTION = 'Please spell your full name for me.'
 PHONE_QUESTION = 'What is your phone number?'
-RETRY_LINE = "I wasn't able to verify those details. Let's try once more."
-FAILED_LINE = "I'm sorry, I wasn't able to verify those details, so I can't open a claim on this call."
-VERIFIED_LINE = "Thank you, you're verified."
+RETRY_LINE = "Hmm, I couldn't verify those details. Let's try that one more time."
+FAILED_LINE = "I'm sorry, I still couldn't verify those details, so I can't open a claim on this call."
+VERIFIED_LINE = "Thanks so much, you're all verified."
 
 
 def identity_fields(spell_name=False):
@@ -27,7 +26,6 @@ def identity_fields(spell_name=False):
     from .claim_intake import LOSS_TYPES
 
     volunteer = ' Record this only if the caller volunteers it. Never ask for it.'
-    today = datetime.now().astimezone().date().isoformat()
     return [
         FieldDefinition('policy_number', 'The policy number, digits only. Do not record letters.',
                         question=POLICY_QUESTION, field_type='digit_sequence', sensitive=True),
@@ -38,11 +36,11 @@ def identity_fields(spell_name=False):
                         question=PHONE_QUESTION, field_type='digit_sequence', sensitive=True),
         FieldDefinition('request_type', 'The request type.' + volunteer, required=False,
                         field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST)),
-        FieldDefinition('description', 'What happened.' + volunteer, required=False),
+        FieldDefinition('description', "What happened. Record what happened in the caller's own words, for example 'my mother', not 'the caller's mother'." + volunteer, required=False),
         FieldDefinition('location', 'Where it happened.' + volunteer, required=False),
         FieldDefinition('loss_type', 'The kind of loss.' + volunteer, required=False,
                         field_type='multiple_choice', choices=LOSS_TYPES),
-        FieldDefinition('stated_time', f'The stated loss time as ISO 8601, like 2026-10-31T15:00:00. Today is {today}.'
+        FieldDefinition('stated_time', f'The stated loss time as ISO 8601, like 2026-10-31T15:00:00. {speech.date_context()}'
                         + volunteer, required=False),
     ]
 
@@ -82,8 +80,8 @@ def _confirm_identity(call, state, bridge):
     if state.spell_name:
         name = ' , '.join(_digits(word) for word in name.split())
     bridge.set_task(call, CONFIRM_TASK_ID,
-        say=[f"I have your policy number as {_digits(state.fact('policy_number'))}, your name as {name}, "
-             f"and your phone number as {_digits(state.fact('caller_phone'))}. Is that right?"],
+        say=[f"I have your policy number as {speech.spell_out(state.fact('policy_number'))}, your name as {name}, "
+             f"and your phone number as {speech.spell_out(state.fact('caller_phone'))}. Is that right?"],
         fields=[FieldDefinition('identity_confirmed', 'Whether the caller confirms these details.',
                                 field_type='multiple_choice', choices=('yes', 'no'))],
         objective='Record whether the caller confirms these details. Say nothing else about them. ' + KEEP_CONTEXT_RULE + CALL_ENDING_RULE,
@@ -133,13 +131,13 @@ def _retry_or_fail(call, state, bridge, spell_name):
                 "Do not ask about the loss or discuss it until the application tells you to. Do not greet the caller again. "
                 "Say nothing about what the policy contains or which detail failed. Never use the phrase 'against the policy'. " + CALL_ENDING_RULE)
         return Action('identity_retry', 'guava', retry)
-    return Action('announce_verification', 'guava', lambda: _announce_mismatch(call, bridge))
+    return Action('announce_verification', 'guava', lambda: _announce_mismatch(call, bridge, state))
 
 
-def _announce_mismatch(call, bridge):
+def _announce_mismatch(call, bridge, state):
     from ..coordinator import CALL_ENDING_RULE
 
     logger.info('Policy completion mismatch')
-    bridge.set_task(call, 'policy-verification-mismatch', say=[FAILED_LINE],
+    endings.start(call, bridge, state, 'verification_failed', 'policy-verification-mismatch', say=[FAILED_LINE],
         objective='Offer nothing further about this policy. Do not reveal any stored detail or which detail failed. '
         'Do not claim to transfer or escalate the caller, or to create or submit a claim. ' + CALL_ENDING_RULE)

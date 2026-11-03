@@ -21,6 +21,7 @@ class CallState:
     verified_profile: Any = None
     approved_fields: dict[str, Any] | None = None
     submission_reference: str | None = None
+    ending: str | None = None
 
     facts: tuple[tuple[str, Any], ...] = ()
     identity_retries: int = 0

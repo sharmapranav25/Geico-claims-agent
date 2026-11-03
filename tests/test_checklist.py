@@ -16,6 +16,7 @@ from test_single_path import FakeBridge
 
 
 EXPECTED_CHECKS = [
+    ('ending', 'Acknowledge the outcome and close'),
     ('1', 'No immediate safety concern'),
     ('2', 'Clear communication'),
     ('3', 'Clear intent and role'),
@@ -69,7 +70,7 @@ def test_priority_leaves_lower_check_pending(monkeypatch):
 @pytest.fixture
 def flow(monkeypatch, callback_path):
     bridge = FakeBridge()
-    call = call_fields() | {'identity_confirmed': 'yes', 'submission_decision': 'approve', 'needs_more_help': 'no'}
+    call = call_fields() | {'identity_confirmed': 'yes', 'submission_decision': 'approve', 'ending_ack': 'done'}
     call.pop('request_type')
     client = Mock()
     client.get_policy.return_value = PROFILE
@@ -137,7 +138,7 @@ def test_extra_check_runs_after_verification_in_registered_flow(flow, monkeypatc
         return Action('extra_situation', 'guava', lambda: bridge.send_instruction(call, 'Extra situation.'))
 
     checks = checklist.CHECKS
-    monkeypatch.setattr(checklist, 'CHECKS', checks[:6] + (checklist.Check('6a', 'Extra situation', extra),) + checks[6:])
+    monkeypatch.setattr(checklist, 'CHECKS', checks[:7] + (checklist.Check('6a', 'Extra situation', extra),) + checks[7:])
     with caplog.at_level('INFO', logger=checklist.__name__):
         happy_path(flow)
     sequence = selected(caplog)
@@ -146,7 +147,7 @@ def test_extra_check_runs_after_verification_in_registered_flow(flow, monkeypatc
     assert sequence[position + 1] == ('7', 'save_draft')
     assert flow.bridge.instructions == ['Extra situation.']
     assert flow.state.result('extra_situation').ok
-    assert flow.bridge.tasks[-1].task_id == 'end-call-success'
+    assert flow.bridge.tasks[-1].task_id == 'hang-up'
 
 
 def test_happy_path_check_action_sequence(flow, caplog):
@@ -155,7 +156,7 @@ def test_happy_path_check_action_sequence(flow, caplog):
     assert selected(caplog) == [
         ('6', 'check_api'), ('6', 'start_verification'), ('6', 'start_confirm'), ('6', 'fetch_policy'),
         ('6', 'announce_verification'), ('5', 'start_request'), ('7', 'save_draft'),
-        ('7', 'start_review'), ('9', 'submit_claim'), ('10', 'announce_submission'), ('11', 'close_call'),
+        ('7', 'start_review'), ('9', 'submit_claim'), ('10', 'announce_submission'), ('ending', 'hang_up'),
     ]
 
 
@@ -244,7 +245,7 @@ def test_volunteered_request_skips_start_request(flow, caplog):
                review_claim.REVIEW_TASK_ID, submit_claim.SUBMITTED_TASK_ID)
     assert ('5', 'start_request') not in selected(caplog)
     assert coordinator.REQUEST_TASK_ID not in [task.task_id for task in flow.bridge.tasks]
-    assert flow.bridge.tasks[-1].task_id == 'end-call-success'
+    assert flow.bridge.tasks[-1].task_id == 'hang-up'
 
 
 def test_correction_repeats_save_and_review(flow, caplog):

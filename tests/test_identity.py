@@ -36,7 +36,7 @@ def test_readback_and_duplicate_completion_fetch_once(flow):
     assert next(f for f in flow.bridge.tasks[-1].fields if f.key == 'caller_name').question == identity.NAME_QUESTION
     complete(flow, identity.TASK_ID)
     line, = flow.bridge.tasks[-1].say
-    assert '1 0 0 1' in line and '6 2 8 2 6 8 8 7 5 3' in line and 'Michael Johnson' in line
+    assert '1, 0, 0, 1' in line and '6, 2, 8, 2, 6, 8, 8, 7, 5, 3' in line and 'Michael Johnson' in line
     before = len(flow.bridge.tasks)
     complete(flow, identity.TASK_ID)
     assert len(flow.bridge.tasks) == before

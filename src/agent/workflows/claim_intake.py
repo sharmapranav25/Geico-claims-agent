@@ -1,9 +1,9 @@
 """Code-owned claim facts, collection and draft saving."""
 
 import logging
-from datetime import datetime
 
-from .. import api_adapter, verification
+from .. import api_adapter, speech, verification
+from . import endings
 from ..action_loop import Action
 from ..bridge import CallBridge, FieldDefinition
 
@@ -31,18 +31,18 @@ def start(call, bridge, state, say=()):
         state.set_fact('vehicle', vehicle_label(profile.vehicles[0]))
     facts = claim_facts(state)
     bridge.add_info(call, 'recorded_facts', {key: value for key, value in facts.items() if value})
-    today = datetime.now().astimezone().date().isoformat()
     skip = ' Ask for this. Skip it only if the caller says they cannot provide it.'
     fields = [
         FieldDefinition('vehicle', 'Once the caller names a vehicle, record it immediately and do not ask again.',
                         question='Which vehicle was involved?', field_type='multiple_choice',
                         choices=tuple(vehicle_label(vehicle) for vehicle in profile.vehicles)),
-        FieldDefinition('occurred_at', f'The date and time the loss happened. Today is {today}. '
+        FieldDefinition('occurred_at', f'The date and time the loss happened. {speech.date_context()} '
                         'If the caller gives only a time or only a day, ask for the missing part. Never assume a date. '
                         'Record it as ISO 8601, like 2026-10-31T15:00:00.' + skip,
                         question='What date and time did it happen?', required=False),
         FieldDefinition('location', 'Where the loss happened.' + skip, question='Where did it happen?', required=False),
-        FieldDefinition('description', 'Everything the caller said about what happened, combined. Keep earlier details when they add more.' + skip,
+        FieldDefinition('description', "Everything the caller said about what happened, combined. Keep earlier details when they add more. "
+                        "Record what happened in the caller's own words, for example 'my mother', not 'the caller's mother'." + skip,
                         question='What happened?', required=False),
         FieldDefinition('loss_type', 'The kind of loss.', question='What kind of loss was it: collision, theft, weather or other?',
                         field_type='multiple_choice', choices=LOSS_TYPES, required=False),
@@ -106,11 +106,11 @@ def apply_addition(state, value):
     state.clear_done(review_claim.REVIEW_TASK_ID)
 
 
-def _announce_failed(call, bridge):
+def _announce_failed(call, bridge, state):
     from ..coordinator import CALL_ENDING_RULE
 
     logger.info('Claim draft save failed')
-    bridge.set_task(call,
+    endings.start(call, bridge, state, 'save_failed',
         "claim-save-failed",
         objective=(
             "The loss details could not be saved. Say so honestly. Do not "
@@ -127,7 +127,7 @@ def next_action(call, state, bridge, on_unavailable):
     if state.result('announce_missing') is not None:
         return None
     if missing:
-        return Action('announce_missing', 'guava', lambda: _announce_missing(call, bridge, missing))
+        return Action('announce_missing', 'guava', lambda: _announce_missing(call, bridge, state, missing))
     saved = state.result('save_draft')
     if saved is None:
         def save_draft():
@@ -157,19 +157,19 @@ def next_action(call, state, bridge, on_unavailable):
         if isinstance(saved.data, (api_adapter.APIUnavailableError, api_adapter.APIResponseError)):
             logger.info('Claim draft save failed')
             return on_unavailable(call)
-        return _announce_failed(call, bridge)
+        return _announce_failed(call, bridge, state)
 
     return Action('announce_save', 'guava', announce_save)
 
 
-def _announce_missing(call, bridge, missing):
+def _announce_missing(call, bridge, state, missing):
     from ..coordinator import CALL_ENDING_RULE
 
     labels = {'vehicle': 'the vehicle', 'occurred_at': 'the date and time',
               'location': 'the location', 'description': 'what happened'}
     readable = ', '.join(labels[key] for key in missing)
     logger.info('Claim missing required details')
-    bridge.set_task(call, 'claim-missing-details',
+    endings.start(call, bridge, state, 'missing_details', 'claim-missing-details',
         say=[f"I can't open the claim without {readable}. Nothing has been submitted."],
         objective='Explain nothing was submitted. Do not promise the portal can finish it. ' + CALL_ENDING_RULE)
 

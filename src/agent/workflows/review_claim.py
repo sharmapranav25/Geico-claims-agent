@@ -2,7 +2,7 @@
 
 import logging
 
-from .. import verification
+from .. import speech
 from ..bridge import FieldDefinition
 from . import claim_intake
 
@@ -10,13 +10,16 @@ logger = logging.getLogger(__name__)
 REVIEW_TASK_ID = 'review-claim'
 TASK_IDS = (REVIEW_TASK_ID,)
 MAX_CORRECTIONS = 5
+LOSS_LINES = {'collision': ' This was a collision.', 'theft': ' This was a theft.', 'weather': ' This was weather damage.'}
 
 
-def review_line(fields):
-    date = verification.parse_occurred_at(fields['occurred_at']).strftime('%A, %B %-d at %-I:%M %p')
-    return (f"Here is what I have. Vehicle: {fields['vehicle']}. When: {date}. "
-            f"Where: {fields['location'].rstrip('. ')}. What happened: {fields['description'].rstrip('. ')}. "
-            f"Type of loss: {fields['loss_type'] or 'not provided'}. Would you like to add anything, or should I file this claim?")
+def review_line(fields, summary=None):
+    date = speech.spoken_date(fields['occurred_at'])
+    incident = (summary or fields['description']).rstrip('. ')
+    loss = LOSS_LINES.get(fields.get('loss_type'), '')
+    return (f"So here's what I have. It was your {fields['vehicle']}, on {date}, "
+            f"at {fields['location'].rstrip('. ')}. {incident}.{loss} "
+            "Would you like to add anything, or should I file this claim?")
 
 
 def start_review(call, bridge, state):
@@ -24,7 +27,7 @@ def start_review(call, bridge, state):
 
     logger.info('Claim draft saved')
     fields = claim_intake.claim_facts(state)
-    line = state.review_prefix + review_line(fields)
+    line = state.review_prefix + review_line(fields, state.fact('incident_summary'))
     state.review_prefix = ''
     bridge.set_task(call, REVIEW_TASK_ID, say=[line],
         completion_criteria='Complete as soon as the decision is recorded.',

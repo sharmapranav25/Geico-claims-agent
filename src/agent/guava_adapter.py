@@ -53,10 +53,6 @@ class SDKBridge(CallBridge):
         agent.on_question(handler)
 
     @staticmethod
-    def end_call_success(call):
-        end_call_success(call)
-
-    @staticmethod
     def hang_up(call, final_line):
         call.hangup(final_instructions=f'Say exactly: "{final_line}"')
 
@@ -93,24 +89,6 @@ class SDKBridge(CallBridge):
 SDK_BRIDGE = SDKBridge()
 
 
-def end_call_success(call: guava.Call) -> None:
-    """End a completed task after the caller has confirmed they are done."""
-    call.hangup(
-        final_instructions='End on a positive note. Say exactly: "I hope you have a great day."'
-    )
-
-
-def end_call_unresolved(call: guava.Call, reason: str = "") -> None:
-    """End an unresolved task after the caller has confirmed they are done."""
-    instructions = (
-        'Apologize and end the call. Say exactly: '
-        '"I\'m sorry I could not help you, but I need to hang up now."'
-    )
-    if reason:
-        instructions += f" Context only (do not change the spoken apology): {reason}"
-    call.hangup(final_instructions=instructions)
-
-
 def on_call_received(call_info: guava.CallInfo) -> guava.IncomingCallAction:
     logger.info("Call accepted")
     return guava.AcceptCall()
@@ -143,7 +121,7 @@ def build_agent(
     """Build an independently configured agent and connect dispatch handlers."""
     agent = guava.Agent(
         name=name, organization=organization, purpose=purpose, voice=voice,
-        pronunciations={"GEICO": "Guy-co"} if pronunciations is None else pronunciations,
+        pronunciations={"GEICO": "Guy-co", "911": "nine one one"} if pronunciations is None else pronunciations,
     )
     # Attach lifecycle callbacks once for each configured agent.
     agent.on_call_received(on_call_received)

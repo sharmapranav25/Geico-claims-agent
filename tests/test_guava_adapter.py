@@ -75,31 +75,6 @@ def test_on_call_start_delegates_to_coordinator(adapter, monkeypatch):
     start.assert_called_once_with(call, adapter.SDK_BRIDGE)
 
 
-def test_end_call_success_enqueues_sign_off(adapter):
-    call = MockCall()
-
-    adapter.end_call_success(call)
-
-    assert len(call._command_queue) == 1
-    command = call._command_queue[0]
-    assert isinstance(command, SendInstructionCommand)
-    assert "I hope you have a great day." in command.instruction
-
-
-@pytest.mark.parametrize("reason", ["", "The requested task is not implemented."])
-def test_end_call_unresolved_enqueues_sign_off(adapter, reason):
-    call = MockCall()
-
-    adapter.end_call_unresolved(call, reason)
-
-    assert len(call._command_queue) == 1
-    command = call._command_queue[0]
-    assert isinstance(command, SendInstructionCommand)
-    assert "I'm sorry I could not help you, but I need to hang up now." in command.instruction
-    if reason:
-        assert reason in command.instruction
-
-
 def test_build_agent_configures_identity_and_registers_handlers(adapter):
     with patch("guava.agent.Client"), patch.object(adapter.coordinator, "register", wraps=adapter.coordinator.register) as register:
         custom = adapter.build_agent(name="Sam", organization="Test Organization", purpose="Test purpose", voice="test-voice")
@@ -115,7 +90,7 @@ def test_build_agent_configures_identity_and_registers_handlers(adapter):
 
 
 def test_build_agent_default_and_overridden_pronunciations(adapter):
-    assert adapter.agent._tts_replacements == {"GEICO": "Guy-co"}
+    assert adapter.agent._tts_replacements == {"GEICO": "Guy-co", "911": "nine one one"}
     with patch("guava.agent.Client"):
         custom = adapter.build_agent(pronunciations={"GEICO": "guy-koh", "ACME": "Ack-mee"})
         disabled = adapter.build_agent(pronunciations={})
@@ -236,12 +211,12 @@ def test_policy_validation_failure_retries_without_completion(adapter, monkeypat
     assert 'Policy validation not found' in caplog.messages
 
 
-def test_bridge_end_call_success_enqueues_existing_sign_off(adapter):
+def test_bridge_hang_up_enqueues_one_sign_off(adapter):
     call = MockCall()
-    adapter.SDK_BRIDGE.end_call_success(call)
+    adapter.SDK_BRIDGE.hang_up(call, 'Thanks for calling GEICO. Goodbye.')
     command, = call._command_queue
     assert isinstance(command, SendInstructionCommand)
-    assert 'End on a positive note. Say exactly: "I hope you have a great day."' in command.instruction
+    assert 'Say exactly: "Thanks for calling GEICO. Goodbye."' in command.instruction
 
 
 def test_bridge_hang_up_speaks_the_given_final_line(adapter):
