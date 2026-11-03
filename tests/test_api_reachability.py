@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, checklist, coordinator
 from agent.call_state import CallState
+from supervisor_helpers import safe_generate, after_safety, completion
 from agent.workflows import policy_lookup, identity
 
 
@@ -129,6 +130,8 @@ def test_bad_response_never_returns_result(local_api, status, body, message):
 
 
 class FakeBridge:
+    generate = staticmethod(safe_generate)
+
     def __init__(self):
         self.tasks = []
         self.validators = {}
@@ -153,13 +156,13 @@ def test_unavailable_api_does_not_escape_workflow_or_verify(unavailable_api):
         'policy_number': '1001', 'caller_name': 'Michael Johnson',
         'caller_phone': '628-268-8753',
     }
-    state = CallState('test-session')
+    state = after_safety(CallState('test-session'))
     policy_lookup.register(object(), bridge)
     coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(
         on_verified=lambda call, profile: bridge.set_task(call, 'verified', ''),
         on_unavailable=lambda call: bridge.set_task(call, 'assistance-offer', ''),
     ))
-    identity.start(call, bridge)
+    identity.start(call, bridge, state)
 
     # No injected exceptions: both registered callbacks use the real adapter.
     result = bridge.validators['policy_number'](call, call['policy_number'])

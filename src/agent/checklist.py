@@ -1,14 +1,17 @@
 """Ordered coordination checks.
 
 To add a situation, write its workflow with TASK_IDS, add its task IDs to
-coordinator.COMPLETION_TASKS, and add or extend a check.
+coordinator.COMPLETION_TASKS, and add or extend a check. Background detection
+only records signals or nudges and re-runs this checklist; it never routes directly.
 """
 
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .workflows import assistance, claim_intake, identity, review_claim, submit_claim
+from .action_loop import Action
+from .bridge import FieldDefinition
+from .workflows import endings, assistance, claim_intake, identity, review_claim, safety, submit_claim
 
 logger = logging.getLogger(__name__)
 PASS = object()   # The check is satisfied; continue to the next one.
@@ -27,22 +30,39 @@ class Check:
     run: Callable
 
 
-def check_safety(call, state, bridge, routes):
-    # Built in Prompt 3.
-    return PASS
+ROLE_LINE = "I can only open a claim for the policyholder on this call, but I can have a person call you back. Would you like that?"
 
 
-def check_communication(call, state, bridge, routes):
-    # Built in Prompt 3.
-    return PASS
+def check_danger(call, state, bridge, routes):
+    if state.stopped:
+        return None
+    action = safety.next_action(call, state, bridge)
+    if action is not None:
+        return action
+    return PASS if state.done(safety.TASK_ID) else None
 
 
-def check_one_task(call, state, bridge, routes):
-    # Built in Prompt 3.
-    return PASS
+def check_role(call, state, bridge, routes):
+    from .coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
 
-
-def check_intent_and_role(call, state, bridge, routes):
+    if state.signals.get('someone_else') and submit_claim.submitted_claim(state) is None and not submit_claim.submission_uncertain(state):
+        if not state.claim_blocked:
+            state.claim_blocked = True
+            state.verified_profile = None
+            state.approved_fields = None
+            state.review_decision = None
+            state.open_task = assistance.CALLBACK_OFFER_TASK_ID
+            return Action('role_callback_offer', 'guava', lambda: bridge.set_task(call,
+                assistance.CALLBACK_OFFER_TASK_ID, say=[ROLE_LINE],
+                fields=[FieldDefinition('wants_callback', 'Whether the caller wants a callback. Giving a callback time counts as yes.',
+                                        field_type='multiple_choice', choices=('yes', 'no'))],
+                objective='Record whether the caller wants a callback. Do not collect policy or claim details or disclose protected information. '
+                          'Never say a callback is noted or saved before the application confirms it. ' + KEEP_CONTEXT_RULE + CALL_ENDING_RULE))
+        if state.done(assistance.CALLBACK_TASK_ID):
+            return assistance.next_callback_action(call, state, bridge)
+        if state.done(assistance.CALLBACK_OFFER_TASK_ID):
+            return assistance.next_callback_offer_action(call, state, bridge)
+        return None
     from .coordinator import REQUEST_TASK_ID, REPORT_OWN_LOSS
     if state.verified_profile is None or state.result('announce_verification') is None:
         return PASS
@@ -51,7 +71,7 @@ def check_intent_and_role(call, state, bridge, routes):
 
 def check_scope(call, state, bridge, routes):
     from .coordinator import REPORT_OWN_LOSS, REQUEST_TASK_ID, next_request_action
-    # Assistance is entered from checks 6, 7 and 10; the latest finished step decides.
+    # Assistance is entered from verification, collection and result checks; the latest finished step decides.
     if state.done(assistance.CALLBACK_TASK_ID):
         return assistance.next_callback_action(call, state, bridge)
     if state.done(assistance.CALLBACK_OFFER_TASK_ID):
@@ -66,12 +86,20 @@ def check_scope(call, state, bridge, routes):
     return PASS if bridge.get_field(call, 'request_type') == REPORT_OWN_LOSS else None
 
 
+def check_nudges(call, state, bridge, routes):
+    if state.pending_nudges:
+        instruction = state.pending_nudges.pop(0)
+        state.nudge_count += 1
+        return Action(f'nudge_{state.nudge_count}', 'guava', lambda: bridge.send_instruction(call, instruction))
+    return PASS
+
+
 def check_verification(call, state, bridge, routes):
     from .coordinator import next_start_action
     if state.verified_profile is not None:
         return PASS
     if not state.done(identity.TASK_ID):
-        return None if state.completed_tasks or state.result('identity_retry') is not None else next_start_action(call, state, bridge)
+        return None if (state.completed_tasks - {safety.TASK_ID}) or state.result('identity_retry') is not None else next_start_action(call, state, bridge)
     return identity.next_action(call, state, bridge, routes.on_verified, routes.on_unavailable)
 
 
@@ -108,17 +136,18 @@ def check_close(call, state, bridge, routes):
 
 
 CHECKS = (
-    Check('1', 'No immediate safety concern', check_safety),
-    Check('2', 'Clear communication', check_communication),
-    Check('3', 'Clear intent and role', check_intent_and_role),
-    Check('4', 'One task handled at a time', check_one_task),
-    Check('5', 'Within supported scope', check_scope),
-    Check('6', 'Required verification confirmed', check_verification),
-    Check('7', 'Required information available', check_required_information),
-    Check('8', 'Consistent information', check_consistency),
-    Check('9', 'Permission given', check_permission),
-    Check('10', 'Clear successful result', check_result),
-    Check('11', 'Explain the result and close', check_close),
+    Check('1', 'Danger', check_danger),
+    Check('ending', 'Acknowledge the outcome and close',
+          lambda call, state, bridge, routes: endings.next_action(call, state, bridge) if state.ending else PASS),
+    Check('2', 'Intent or role', check_role),
+    Check('3', 'Within supported scope', check_scope),
+    Check('4', 'Conflicts and multiple incidents', check_nudges),
+    Check('5', 'Required verification', check_verification),
+    Check('6', 'Required information', check_required_information),
+    Check('7', 'Consistent information', check_consistency),
+    Check('8', 'Permission given', check_permission),
+    Check('9', 'Clear successful result', check_result),
+    Check('10', 'Explain the result and close', check_close),
 )
 
 

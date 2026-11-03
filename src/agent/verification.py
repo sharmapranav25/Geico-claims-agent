@@ -7,6 +7,9 @@ from zoneinfo import ZoneInfo
 
 NAME_MATCH_THRESHOLD = 0.85
 CALLBACK_ZONE = ZoneInfo('America/Los_Angeles')
+RELATIVE_TIME = re.compile(r"\b(today|tonight|yesterday|tomorrow|ago|last night|last week|this morning|this afternoon|this evening|just now|earlier)\b")
+EXPLICIT_DATE = re.compile(r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b|\b\d{1,2}/\d{1,2}\b")
+EXACT_TIME_LINE = "Since claims need to be accurate, I need you to tell me the exact date and time, like November 1st at 5 PM."
 
 
 def identity_matches(profile, caller_name: str, caller_phone: str) -> bool:
@@ -36,6 +39,12 @@ def parse_occurred_at(value):
     except (AttributeError, ValueError):
         return None
     return parsed if parsed.tzinfo else parsed.astimezone()
+
+
+def is_relative_time(text):
+    # The model cannot reliably turn these into a date, and a claim needs an exact one.
+    text = text.casefold() if isinstance(text, str) else ''
+    return bool(RELATIVE_TIME.search(text)) and not EXPLICIT_DATE.search(text)
 
 
 def validate_occurred_at(value, now=None):

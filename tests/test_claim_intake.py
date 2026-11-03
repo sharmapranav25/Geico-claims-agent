@@ -9,7 +9,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, checklist, coordinator, verification
 from agent.call_state import CallState
-from agent.workflows import claim_intake, review_claim, submit_claim
+from supervisor_helpers import safe_generate, after_safety, completion
+from agent.workflows import endings, claim_intake, review_claim, submit_claim
 
 VEHICLES = (
     SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry'),
@@ -24,13 +25,18 @@ FIELDS = {
 
 
 class FakeBridge:
+    generate = staticmethod(safe_generate)
+
+    def get_session_id(self, call):
+        return 'validator-session'
+
     def __init__(self):
         self.tasks = []
         self.validators = {}
         self.completions = {}
         self.say = []
         self.completion_criteria = {}
-        self.end_call_success = Mock()
+        self.hang_up = Mock()
 
     def set_task(self, call, task_id, objective, todos=(), *, fields=(), say=(), completion_criteria=""):
         self.tasks.append((task_id, objective, fields))
@@ -47,7 +53,7 @@ class FakeBridge:
         self.validators[key] = handler
 
     def register_task_complete(self, agent, task_id, handler):
-        self.completions[task_id] = handler
+        self.completions[task_id] = completion(self, handler)
 
 
 @pytest.fixture
@@ -63,6 +69,7 @@ def api(monkeypatch):
 def registered(profile=PROFILE):
     bridge = FakeBridge()
     state = CallState('test-session', verified_profile=profile, facts=tuple((key, FIELDS[key]) for key in ('caller_name', 'caller_phone')))
+    after_safety(state)
     bridge.state = state
     claim_intake.register(object(), bridge)
     coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(
@@ -77,7 +84,7 @@ def test_start_offers_only_this_policys_vehicles():
     task_id, _, fields = bridge.tasks[0]
     assert task_id == claim_intake.TASK_ID
     vehicle = next(field for field in fields if field.key == 'vehicle')
-    assert vehicle.choices == ('2021 Toyota Camry', '2022 Honda Civic')
+    assert vehicle.choices == ('2021 Toyota Camry', '2022 Honda Civic', claim_intake.NOT_ON_POLICY)
     assert vehicle.question == 'Which vehicle was involved?'
 
 
@@ -91,18 +98,28 @@ def test_occurred_at_rejects_future_with_fixed_now():
     assert 'has not happened yet' in reason
 
 
-def test_single_vehicle_is_used_without_a_field(api):
+def test_single_vehicle_is_confirmed_with_the_caller(api):
     profile = SimpleNamespace(policy_number=PROFILE.policy_number, vehicles=VEHICLES[:1])
     bridge = registered(profile)
-    call = {key: value for key, value in FIELDS.items() if key != 'vehicle'}
+    call = dict(FIELDS, vehicle='2021 Toyota Camry')
     claim_intake.start(call, bridge, bridge.state)
-    _, objective, fields = bridge.tasks[-1]
-    assert 'vehicle' not in {field.key for field in fields}
-    assert bridge.state.fact('vehicle') == '2021 Toyota Camry'
+    vehicle = next(field for field in bridge.tasks[-1][2] if field.key == 'vehicle')
+    assert vehicle.question == 'I see your 2021 Toyota Camry on this policy. Was that the vehicle involved?'
+    assert vehicle.choices == ('2021 Toyota Camry', claim_intake.NOT_ON_POLICY)
+    assert bridge.state.fact('vehicle') is None
     bridge.completions[claim_intake.TASK_ID](call)
     assert api.update_claim_draft.call_args.args[1].vehicle_id == 'V01-1'
     assert '2021 Toyota Camry' in bridge.say[-1][0]
-    assert bridge.state.result('start_review').data['vehicle'] == '2021 Toyota Camry'
+
+
+def test_vehicle_not_on_the_policy_is_never_filed(api):
+    bridge = registered()
+    call = dict(FIELDS, vehicle=claim_intake.NOT_ON_POLICY)
+    bridge.completions[claim_intake.TASK_ID](call)
+    assert bridge.state.fact('vehicle') is None
+    assert bridge.tasks[-1][0] == 'claim-missing-details'
+    api.update_claim_draft.assert_not_called()
+    api.submit_claim_draft.assert_not_called()
 
 
 def test_collection_and_review_completion_criteria(api):
@@ -111,7 +128,7 @@ def test_collection_and_review_completion_criteria(api):
     claim_intake.start(call, bridge, bridge.state)
     bridge.completions[claim_intake.TASK_ID](call)
     assert bridge.completion_criteria[claim_intake.TASK_ID] == (
-        'Complete as soon as every field is recorded. Do not ask for extra confirmation; '
+        'Complete as soon as every field you need to ask for is recorded. Do not ask for extra confirmation; '
         'the application reads the details back next.'
     )
     assert bridge.completion_criteria[review_claim.REVIEW_TASK_ID] == 'Complete as soon as the decision is recorded.'
@@ -120,7 +137,7 @@ def test_collection_and_review_completion_criteria(api):
 def test_review_line_strips_trailing_periods_and_spaces():
     line = review_claim.review_line(dict(FIELDS, location='Main and 5th... ', description='Rear-ended at a light. . '))
     assert '..' not in line
-    assert 'Where: Main and 5th. What happened: Rear-ended at a light. Type of loss:' in line
+    assert 'at Main and 5th. Rear-ended at a light. This was a collision.' in line
 
 
 def test_complete_saves_draft_with_chosen_vehicle_and_never_submits(api):
@@ -179,7 +196,7 @@ def test_review_speaks_every_field_without_claiming_submission(api):
     line, = bridge.say[-1]
     assert line == review_claim.review_line(claim_intake.claim_facts(bridge.state))
     for key in claim_intake.CLAIM_FIELDS:
-        value = call[key] if key != 'occurred_at' else 'Sunday, November 1 at 3:00 PM'
+        value = call[key] if key != 'occurred_at' else 'Sunday, November 1 at 3 PM'
         assert value in line
     assert 'has been submitted' not in line
     assert bridge.state.result('start_review').data == {key: call[key] for key in claim_intake.CLAIM_FIELDS}
@@ -206,7 +223,7 @@ def test_approve_submits_once_with_current_review_and_real_number(api, caplog):
     api.submit_claim_draft.assert_called_once_with(PROFILE.policy_number, submission_reference=reference)
     assert bridge.state.approved_fields == {key: call[key] for key in claim_intake.CLAIM_FIELDS}
     assert bridge.tasks[-1][0] == submit_claim.SUBMITTED_TASK_ID
-    assert bridge.say[-1] == (f'Your claim has been submitted. Your claim number is CLM-A1B2C3D4. {submit_claim.PORTAL_LINE} Is there anything else you need?',)
+    assert bridge.say[-1] == (f'All done, your claim has been filed. Your claim number is C, L, M, A, 1, B, 2, C, 3, D, 4. {submit_claim.PORTAL_LINE} Is there anything else I can help you with?',)
     assert 'Claim submitted' in caplog.messages
     assert 'CLM-A1B2C3D4' not in caplog.text and reference not in caplog.text
     assert call['description'] not in caplog.text
@@ -254,15 +271,15 @@ def test_submission_failure_never_announces_claim(api, caplog, error, task):
 @pytest.mark.parametrize('needs_help', ['yes', 'no'])
 def test_submitted_call_closes_once_only_when_done(api, needs_help):
     bridge, call = reviewed_call(api)
-    call.update(submission_decision='approve', needs_more_help=needs_help)
+    call.update(submission_decision='approve', ending_ack='done' if needs_help == 'no' else 'more')
     bridge.completions[review_claim.REVIEW_TASK_ID](call)
     bridge.completions[submit_claim.SUBMITTED_TASK_ID](call)
     bridge.completions[submit_claim.SUBMITTED_TASK_ID](call)
     if needs_help == 'no':
-        bridge.end_call_success.assert_called_once_with(call)
+        bridge.hang_up.assert_called_once_with(call, endings.FINAL_LINES['filed'])
     else:
-        bridge.end_call_success.assert_not_called()
-        assert bridge.tasks[-1][0] == 'claim-more-help'
+        bridge.hang_up.assert_not_called()
+        assert bridge.tasks[-1][0] == endings.MORE_TASK_ID
 
 
 def test_existing_facts_omit_fields_but_keep_correction_fields(api):
@@ -272,7 +289,7 @@ def test_existing_facts_omit_fields_but_keep_correction_fields(api):
     fields = {field.key: field for field in bridge.tasks[-1][2]}
     assert 'location' not in fields
     assert {'corrected_field', 'corrected_value'} <= fields.keys()
-    assert all(not fields[key].required for key in ('occurred_at', 'description', 'loss_type', 'corrected_field', 'corrected_value'))
+    assert all(not fields[key].required for key in ('occurred_at', 'description', 'corrected_field', 'corrected_value'))
 
 
 def test_all_facts_present_has_no_fields_and_advances(api):
@@ -305,13 +322,15 @@ def test_skipped_required_fact_never_saves(api, missing):
     api.submit_claim_draft.assert_not_called()
 
 
-def test_optional_loss_type_stays_none(api):
+def test_failed_classification_leaves_loss_type_none(api):
     bridge = registered()
+    bridge.generate = Mock(side_effect=RuntimeError('offline'))
     call = dict(FIELDS)
     call.pop('loss_type')
     bridge.completions[claim_intake.TASK_ID](call)
     assert api.update_claim_draft.call_args.args[1].loss_type is None
-    assert 'Type of loss: not provided.' in bridge.say[-1][0]
+    assert 'This was a' not in bridge.say[-1][0]
+    assert 'not provided' not in bridge.say[-1][0]
 
 
 @pytest.mark.parametrize('decision,value,valid', [('change', 'Oak Street', True), ('change', ' ', False),
@@ -324,7 +343,7 @@ def test_review_changes_and_additions(api, decision, value, valid):
     bridge.completions[review_claim.REVIEW_TASK_ID](call)
     assert bridge.state.corrections == 1
     assert api.update_claim_draft.call_count == (2 if valid else 1)
-    assert bridge.tasks[-1][0] == review_claim.REVIEW_TASK_ID
+    assert bridge.tasks[-1][0] == review_claim.REVIEW_TASK_ID + '-1'
     if valid:
         assert bridge.state.approved_fields is None
         expected = value if decision == 'change' else original.rstrip('. ') + '. ' + value
@@ -376,7 +395,7 @@ def test_uncertain_submission_checks_before_retry(api, status, retry):
     relevant = [entry[0] for entry in api.mock_calls if entry[0] in ('submit_claim_draft', 'get_claim_by_reference')]
     assert relevant == ['submit_claim_draft', 'get_claim_by_reference'] + (['submit_claim_draft'] if retry else [])
     if status in ('found', 'missing'):
-        assert 'CLM-RECOVERED' in bridge.say[-1][0]
+        assert 'C, L, M, R, E, C, O, V, E, R, E, D' in bridge.say[-1][0]
     else:
         assert bridge.tasks[-1][0] == 'claim-status-unknown'
         assert 'CLM-' not in bridge.say[-1][0]
@@ -390,3 +409,41 @@ def test_addition_has_no_doubled_sentence_punctuation(ending):
     claim_intake.apply_addition(bridge.state, 'Second detail.')
     assert bridge.state.fact('description') == 'First detail. Second detail.'
     assert bridge.state.corrections == 1
+
+
+@pytest.mark.parametrize('summary', [None, '', 'My car was hit from behind.'])
+@pytest.mark.parametrize('loss_type', ['collision', None])
+def test_review_uses_summary_without_changing_claim_fields(summary, loss_type):
+    fields = dict(FIELDS, loss_type=loss_type)
+    state = CallState('summary', facts=tuple(fields.items()) + (('incident_summary', summary),))
+    bridge = FakeBridge()
+    returned = review_claim.start_review({}, bridge, state)
+    incident = (summary or fields['description']).rstrip('. ')
+    loss = ' This was a collision.' if loss_type else ''
+    assert bridge.say[-1] == (
+        "So here's what I have. It was your 2022 Honda Civic, on Sunday, November 1 at 3 PM, "
+        f"at Main and 5th. {incident}.{loss} Would you like to add anything, or should I file this claim?",
+    )
+    assert returned == claim_intake.claim_facts(state)
+    assert 'incident_summary' not in returned
+    assert 'incident_summary' not in claim_intake.CLAIM_FIELDS
+
+
+@pytest.mark.parametrize('loss_type,loss', [
+    ('collision', ' This was a collision.'),
+    ('theft', ' This was a theft.'),
+    ('weather', ' This was weather damage.'),
+    ('other', " I've put the type of loss down as other."),
+    (None, ''),
+])
+def test_review_loss_wording(loss_type, loss):
+    fields = dict(FIELDS)
+    if loss_type is None:
+        fields.pop('loss_type')
+    else:
+        fields['loss_type'] = loss_type
+    assert review_claim.review_line(fields) == (
+        "So here's what I have. It was your 2022 Honda Civic, on Sunday, November 1 at 3 PM, "
+        f"at Main and 5th. Rear-ended at a light.{loss} "
+        "Would you like to add anything, or should I file this claim?"
+    )

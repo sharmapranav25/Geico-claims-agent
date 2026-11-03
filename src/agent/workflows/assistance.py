@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .. import api_adapter
+from . import endings
 from ..action_loop import Action
 from ..bridge import FieldDefinition
 from ..verification import CALLBACK_ZONE, parse_callback_time, valid_callback_phone
@@ -16,8 +17,8 @@ OFFER_TASK_ID = 'assistance-offer'
 CALLBACK_OFFER_TASK_ID = 'callback-offer'
 CALLBACK_TASK_ID = 'collect-callback'
 TASK_IDS = (OFFER_TASK_ID, CALLBACK_OFFER_TASK_ID, CALLBACK_TASK_ID)
-UNAVAILABLE_LINE = "I'm sorry, I'm unable to assist you right now. Would you like to talk to a GEICO representative?"
-NO_REP_LINE = 'No GEICO representatives are available right now. Would you like to schedule a callback? We call back on weekdays between 9 AM and 4 PM Pacific.'
+UNAVAILABLE_LINE = "I'm sorry, our system isn't available right now. Would you like to talk to a GEICO representative?"
+NO_REP_LINE = "No representatives are free right now, but I can set up a callback for you. We call back on weekdays between 9 AM and 4 PM Pacific. Would you like that?"
 
 
 def check_api():
@@ -61,7 +62,7 @@ def next_offer_action(call, state, bridge):
     if bridge.get_field(call, 'wants_representative') == 'yes':
         logger.info('Representative check none available')
         return Action('answer_offer', 'guava', lambda: _offer_callback(call, bridge))
-    return Action('answer_offer', 'guava', lambda: _close_assistance(call, bridge))
+    return Action('answer_offer', 'guava', lambda: _close_assistance(call, bridge, state))
 
 
 def _offer_callback(call, bridge):
@@ -81,7 +82,7 @@ def next_callback_offer_action(call, state, bridge):
         return None
     if bridge.get_field(call, 'wants_callback') == 'yes':
         return Action('answer_callback_offer', 'guava', lambda: _collect_callback(call, bridge))
-    return Action('answer_callback_offer', 'guava', lambda: _close_assistance(call, bridge))
+    return Action('answer_callback_offer', 'guava', lambda: _close_assistance(call, bridge, state))
 
 
 def _collect_callback(call, bridge):
@@ -121,33 +122,33 @@ def next_callback_action(call, state, bridge):
     if state.result('announce_callback') is not None:
         return None
     return Action('announce_callback', 'guava',
-                  lambda: _announce_callback_saved(call, bridge) if saved.ok else _announce_callback_failed(call, bridge))
+                  lambda: _announce_callback_saved(call, bridge, state) if saved.ok else _announce_callback_failed(call, bridge, state))
 
 
-def _announce_callback_saved(call, bridge):
+def _announce_callback_saved(call, bridge, state):
     from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
 
     logger.info('Callback saved')
-    bridge.set_task(call, 'callback-saved', objective=(
+    endings.start(call, bridge, state, 'callback_saved', 'callback-saved', objective=(
         'The callback request was saved. Confirm the requested time and phone number to the caller. '
         'Do not promise a specific person will call. ' + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
     ))
 
 
-def _announce_callback_failed(call, bridge):
+def _announce_callback_failed(call, bridge, state):
     from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
 
     logger.info('Callback save failed')
-    bridge.set_task(call, 'callback-save-failed', objective=(
+    endings.start(call, bridge, state, 'callback_failed', 'callback-save-failed', objective=(
         'The callback request could not be saved. Tell the caller honestly; do not claim otherwise. '
         + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
     ))
 
 
-def _close_assistance(call, bridge):
+def _close_assistance(call, bridge, state):
     from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
 
-    bridge.set_task(call, 'assistance-closed', objective=(
+    endings.start(call, bridge, state, 'assistance_closed', 'assistance-closed', objective=(
         'Acknowledge politely and offer nothing further. Do not claim a callback was requested or saved. '
         + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
     ))

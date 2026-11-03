@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, coordinator
+from supervisor_helpers import safe_generate, after_safety, completion
 from agent.call_state import InMemoryStateStore
 from agent.workflows import assistance, claim_intake, policy_lookup, identity
 
@@ -44,6 +45,8 @@ def call_fields():
 
 
 class FakeBridge:
+    generate = staticmethod(safe_generate)
+
     def __init__(self):
         self.tasks = []
         self.instructions = []
@@ -51,6 +54,7 @@ class FakeBridge:
         self.validators = {}
         self.completions = {}
         self.actions = {}
+        self.hang_up = Mock(side_effect=lambda call, line: self.instructions.append(line))
 
     def set_task(self, call, task_id, objective, todos=(), *, fields=(), say=(), completion_criteria=""):
         self.tasks.append(SimpleNamespace(task_id=task_id, objective=objective, fields=fields, say=say, completion_criteria=completion_criteria))
@@ -74,7 +78,7 @@ class FakeBridge:
         self.validators[key] = handler
 
     def register_task_complete(self, agent, task_id, handler):
-        self.completions[task_id] = handler
+        self.completions[task_id] = completion(self, handler)
 
     def register_actions(self, agent, choices, handlers):
         self.actions.update(handlers)
@@ -106,6 +110,7 @@ def adapter(monkeypatch):
     with patch('dotenv.load_dotenv'), patch('guava.agent.Client'):
         spec.loader.exec_module(module)
     monkeypatch.setattr(coordinator, 'STORE', InMemoryStateStore())
+    monkeypatch.setattr(module.SDK_BRIDGE, 'generate', safe_generate)
     return module
 
 
@@ -120,6 +125,7 @@ def test_down_start_uses_say_and_never_verifies(adapter, unavailable_api, callba
     from guava.testing import MockCall
 
     call = MockCall()
+    after_safety(coordinator.state_for(call, adapter.SDK_BRIDGE))
     coordinator.start_call(call, adapter.SDK_BRIDGE)
     state = coordinator.state_for(call, adapter.SDK_BRIDGE)
     assert list(state.results) == ['check_api', 'start_assistance']
@@ -138,6 +144,7 @@ def test_up_start_has_no_say(adapter, monkeypatch):
 
     monkeypatch.setattr(assistance, 'check_api', Mock(return_value=[]))
     call = MockCall()
+    after_safety(coordinator.state_for(call, adapter.SDK_BRIDGE))
     coordinator.start_call(call, adapter.SDK_BRIDGE)
     command, = call._command_queue
     assert command.task_id == identity.TASK_ID
@@ -154,6 +161,7 @@ def test_assistance_choices(unavailable_api, callback_path, caplog, wants_rep, w
     bridge = registered()
     call = call_fields() | {'wants_representative': wants_rep, 'wants_callback': wants_callback}
     with caplog.at_level('INFO', logger=assistance.__name__):
+        after_safety(coordinator.state_for(call, bridge))
         coordinator.start_call(call, bridge)
         bridge.completions[assistance.OFFER_TASK_ID](call)
         if wants_rep == 'yes':
@@ -174,6 +182,7 @@ def test_assistance_choices(unavailable_api, callback_path, caplog, wants_rep, w
 def test_callback_write_precedes_confirmation(unavailable_api, callback_path, monkeypatch, caplog, write_fails):
     bridge = registered()
     call = call_fields()
+    after_safety(coordinator.state_for(call, bridge))
     coordinator.start_call(call, bridge)
     bridge.completions[assistance.OFFER_TASK_ID](call)
     bridge.completions[assistance.CALLBACK_OFFER_TASK_ID](call)
@@ -216,6 +225,7 @@ def test_callback_write_precedes_confirmation(unavailable_api, callback_path, mo
 def test_callback_time_invalid_at_save_writes_nothing(unavailable_api, callback_path):
     bridge = registered()
     call = call_fields()
+    after_safety(coordinator.state_for(call, bridge))
     coordinator.start_call(call, bridge)
     bridge.completions[assistance.OFFER_TASK_ID](call)
     bridge.completions[assistance.CALLBACK_OFFER_TASK_ID](call)
@@ -259,6 +269,7 @@ def test_outage_validator_allows_assistance_but_never_verifies(unavailable_api, 
     bridge = registered()
     call = call_fields()
     assert bridge.validators['policy_number'](call, call['policy_number']) is True
+    after_safety(coordinator.state_for(call, bridge))
     bridge.completions[identity.TASK_ID](call)
     call['identity_confirmed'] = 'yes'
     bridge.completions[identity.CONFIRM_TASK_ID](call)
@@ -280,7 +291,7 @@ def test_midcall_save_routes_by_error(callback_path, monkeypatch, error, expecte
     monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
     bridge = registered()
     call = call_fields()
-    coordinator.state_for(call, bridge).verified_profile = PROFILE
+    after_safety(coordinator.state_for(call, bridge)).verified_profile = PROFILE
     bridge.completions[claim_intake.TASK_ID](call)
     assert [task.task_id for task in bridge.tasks] == [expected]
     client.submit_claim_draft.assert_not_called()

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from agent import api_adapter, checklist, coordinator
 from agent.action_loop import Action, MAX_ACTIONS, advance
 from agent.call_state import ActionResult, CallState, InMemoryStateStore
+from supervisor_helpers import safe_generate, after_safety, closeout_done
 from agent.workflows import assistance, claim_intake, policy_lookup, identity
 
 PROFILE = SimpleNamespace(
@@ -22,6 +23,8 @@ PROFILE = SimpleNamespace(
 
 
 class FakeBridge:
+    generate = staticmethod(safe_generate)
+
     def __init__(self):
         self.set_task = Mock()
         self.send_instruction = Mock()
@@ -268,6 +271,7 @@ def test_claim_save_records_result_before_announcement(api, call, error, task):
     client.update_claim_draft.side_effect = error
     bridge = FakeBridge()
     state = CallState('session', verified_profile=PROFILE, facts=tuple(call.items()))
+    closeout_done(state)
     on_unavailable = Mock()
     action = claim_intake.next_action(call, state, bridge, on_unavailable)
     assert (action.name, action.target) == ('save_draft', 'api')
@@ -295,7 +299,7 @@ def test_claim_save_records_result_before_announcement(api, call, error, task):
     on_unavailable.side_effect = announce
     advance(state, lambda current: claim_intake.next_action(call, current, bridge, on_unavailable))
     announcement = 'start_review' if error is None else 'announce_save'
-    assert list(state.results) == ['save_draft', announcement]
+    assert list(state.results) == ['check_details', 'write_summary', 'final_consistency', 'save_draft', announcement]
     assert state.result(announcement).target == 'guava'
     if isinstance(error, api_adapter.APIUnavailableError):
         on_unavailable.assert_called_once_with(call)
@@ -312,7 +316,7 @@ def test_claim_save_records_result_before_announcement(api, call, error, task):
 def test_completing_twice_does_not_repeat_actions(api, call, workflow):
     client, _ = api
     bridge = FakeBridge()
-    state = CallState('session')
+    state = after_safety(CallState('session'))
     if workflow == 'policy':
         policy_lookup.register(object(), bridge)
         coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(
@@ -320,13 +324,14 @@ def test_completing_twice_does_not_repeat_actions(api, call, workflow):
         ))
         handler = bridge.completions[identity.TASK_ID]
     else:
+        closeout_done(state)
         state.verified_profile = PROFILE
         claim_intake.register(object(), bridge)
         coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(Mock(), Mock()))
         handler = bridge.completions[claim_intake.TASK_ID]
     handler(call)
     handler(call)
-    assert len(state.results) == (1 if workflow == 'policy' else 2)
+    assert len(state.results) == (1 if workflow == 'policy' else 5)
     assert client.get_policy.call_count == 0
     assert client.update_claim_draft.call_count == (workflow == 'claim')
     bridge.set_task.assert_called_once()
@@ -336,10 +341,12 @@ def test_start_call_records_verification_once(call, monkeypatch):
     monkeypatch.setattr(assistance, 'check_api', Mock(return_value=[]))
     monkeypatch.setattr(coordinator, 'STORE', InMemoryStateStore())
     bridge = FakeBridge()
+    after_safety(coordinator.state_for(call, bridge))
     coordinator.start_call(call, bridge)
-    state = coordinator.state_for(call, bridge)
+    state = after_safety(coordinator.state_for(call, bridge))
     assert state.result('start_verification') == ActionResult('start_verification', 'guava', True)
     assert coordinator.next_start_action(call, state, bridge) is None
+    after_safety(coordinator.state_for(call, bridge))
     coordinator.start_call(call, bridge)
     bridge.set_task.assert_called_once()
     assert bridge.set_task.call_args.args[1] == identity.TASK_ID
@@ -350,7 +357,7 @@ def test_request_action_is_gated_and_runs_once(api, call, monkeypatch, request_t
     client, factory = api
     monkeypatch.setattr(coordinator, 'STORE', InMemoryStateStore())
     bridge = FakeBridge()
-    state = coordinator.state_for(call, bridge)
+    state = after_safety(coordinator.state_for(call, bridge))
     assert coordinator.next_request_action(call, state, bridge) is None
     state.verified_profile = PROFILE
     call['request_type'] = request_type

@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import guava
 from guava import logging_utils
 from guava.events import AgentSpeechEvent, CallerSpeechEvent
-from guava.helpers.llm import IntentRecognizer
+from guava.helpers.llm import IntentRecognizer, generate
 
 # Support both package imports and the existing direct-script CLI command.
 if __package__:
@@ -41,6 +41,10 @@ class SDKBridge(CallBridge):
         )
 
     @staticmethod
+    def generate(prompt: str, json_schema: dict) -> str:
+        return generate(prompt, json_schema=json_schema)
+
+    @staticmethod
     def send_instruction(call, instruction):
         call.send_instruction(instruction)
 
@@ -53,8 +57,8 @@ class SDKBridge(CallBridge):
         agent.on_question(handler)
 
     @staticmethod
-    def end_call_success(call):
-        end_call_success(call)
+    def hang_up(call, final_line):
+        call.hangup(final_instructions=f'Say exactly: "{final_line}"')
 
     @staticmethod
     def get_field(call, key):
@@ -89,24 +93,6 @@ class SDKBridge(CallBridge):
 SDK_BRIDGE = SDKBridge()
 
 
-def end_call_success(call: guava.Call) -> None:
-    """End a completed task after the caller has confirmed they are done."""
-    call.hangup(
-        final_instructions='End on a positive note. Say exactly: "I hope you have a great day."'
-    )
-
-
-def end_call_unresolved(call: guava.Call, reason: str = "") -> None:
-    """End an unresolved task after the caller has confirmed they are done."""
-    instructions = (
-        'Apologize and end the call. Say exactly: '
-        '"I\'m sorry I could not help you, but I need to hang up now."'
-    )
-    if reason:
-        instructions += f" Context only (do not change the spoken apology): {reason}"
-    call.hangup(final_instructions=instructions)
-
-
 def on_call_received(call_info: guava.CallInfo) -> guava.IncomingCallAction:
     logger.info("Call accepted")
     return guava.AcceptCall()
@@ -122,11 +108,15 @@ def on_session_end(call: guava.Call, event) -> None:
 
 
 def on_caller_speech(call: guava.Call, event: CallerSpeechEvent) -> None:
-    logger.info("Caller utterance: %s", event.utterance)
+    if os.environ.get('LOG_SPEECH'):
+        logger.info("Caller utterance: %s", event.utterance)
+    coordinator.on_speech(call, 'caller', event.utterance, event.utterance_id, SDK_BRIDGE)
 
 
 def on_agent_speech(call: guava.Call, event: AgentSpeechEvent) -> None:
-    logger.info("Agent utterance: %s", event.utterance)
+    if os.environ.get('LOG_SPEECH'):
+        logger.info("Agent utterance: %s", event.utterance)
+    coordinator.on_speech(call, 'agent', event.utterance, None, SDK_BRIDGE)
 
 
 def build_agent(
@@ -139,7 +129,7 @@ def build_agent(
     """Build an independently configured agent and connect dispatch handlers."""
     agent = guava.Agent(
         name=name, organization=organization, purpose=purpose, voice=voice,
-        pronunciations={"GEICO": "Guy-co"} if pronunciations is None else pronunciations,
+        pronunciations={"GEICO": "Guy-co", "911": "nine one one"} if pronunciations is None else pronunciations,
     )
     # Attach lifecycle callbacks once for each configured agent.
     agent.on_call_received(on_call_received)

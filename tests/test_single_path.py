@@ -10,12 +10,15 @@ import pytest
 from test_api_outage import FakeBridge as BaseBridge, PROFILE, adapter, call_fields, callback_path
 from agent import api_adapter, coordinator
 from agent.call_state import ActionResult, CallState
+from supervisor_helpers import after_safety
 from agent.workflows import assistance, claim_intake, policy_lookup, identity, review_claim, submit_claim
 
 
 class FakeBridge(BaseBridge):
-    def end_call_success(self, call):
-        self.tasks.append(SimpleNamespace(task_id='end-call-success'))
+    def __init__(self):
+        super().__init__()
+        self.hang_up = Mock(side_effect=lambda call, line: self.tasks.append(
+            SimpleNamespace(task_id='hang-up', final_line=line)))
 
 
 COMBINATIONS = list(itertools.product(
@@ -32,7 +35,7 @@ def run_call(monkeypatch, options):
         'caller_name': 'Michael Johnson' if name_ok else 'Jordan Smith',
         'caller_phone': '628-268-8753' if phone_ok else '555-555-0100',
         'identity_confirmed': 'yes', 'wants_representative': wants_rep, 'wants_callback': wants_callback,
-        'submission_decision': decision, 'needs_more_help': needs_more_help,
+        'submission_decision': decision, 'ending_ack': 'done' if needs_more_help == 'no' else 'more',
     }
     call.pop('request_type', None)
     client = Mock()
@@ -49,7 +52,7 @@ def run_call(monkeypatch, options):
     factory.return_value.__exit__ = Mock(return_value=False)
     monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
     coordinator.register(object(), bridge)
-    state = coordinator.state_for(call, bridge)
+    state = after_safety(coordinator.state_for(call, bridge))
     recorded = []
     command_count = 0
     original_record = state.record
@@ -156,7 +159,7 @@ def test_every_decision_selects_one_path(monkeypatch, callback_path, options):
                     elif not submit_ok:
                         expected += ['claim-submit-failed']
                     else:
-                        expected += ['claim-submitted', 'end-call-success' if needs_more_help == 'no' else 'claim-more-help']
+                        expected += ['claim-submitted', 'hang-up' if needs_more_help == 'no' else 'ending-more']
     assert tasks == expected
     assert 'collect-claim' not in tasks or (api_up and found and name_ok and phone_ok)
     assert not ('verify-policy' in tasks and 'assistance-offer' in tasks)
@@ -269,7 +272,7 @@ def test_intent_b_does_not_replace_active_task(callback_path, stage):
     bridge = FakeBridge()
     call = call_fields()
     coordinator.register(object(), bridge)
-    state = coordinator.state_for(call, bridge)
+    state = after_safety(coordinator.state_for(call, bridge))
     if stage == 'verified':
         state.verified_profile = PROFILE
     else:
@@ -283,7 +286,7 @@ def test_intent_b_does_not_replace_active_task(callback_path, stage):
 def test_new_branches_through_registered_handlers(monkeypatch, callback_path, branch):
     bridge, call = FakeBridge(), call_fields()
     call.pop('request_type')
-    call.update(identity_confirmed='yes', submission_decision='approve', needs_more_help='no')
+    call.update(identity_confirmed='yes', submission_decision='approve', ending_ack='done')
     client = Mock()
     client.get_policy.return_value = PROFILE
     client.submit_claim_draft.return_value = SimpleNamespace(claim_number='CLM-BRANCH')
@@ -298,6 +301,7 @@ def test_new_branches_through_registered_handlers(monkeypatch, callback_path, br
         bridge.completions[task](call)
         assert len(bridge.tasks) == before + 1
 
+    after_safety(coordinator.state_for(call, bridge))
     coordinator.start_call(call, bridge)
     finish(identity.TASK_ID)
     if branch == 'no_identity':
@@ -312,7 +316,7 @@ def test_new_branches_through_registered_handlers(monkeypatch, callback_path, br
     finish(identity.CONFIRM_TASK_ID)
     call['request_type'] = coordinator.REPORT_OWN_LOSS
     finish(coordinator.REQUEST_TASK_ID)
-    state = coordinator.state_for(call, bridge)
+    state = after_safety(coordinator.state_for(call, bridge))
     if branch == 'missing':
         call['occurred_at'] = None
     if branch == 'optional':
@@ -329,7 +333,7 @@ def test_new_branches_through_registered_handlers(monkeypatch, callback_path, br
     if branch in ('change', 'add'):
         call.update(submission_decision=branch, corrected_field='location', corrected_value='New detail')
         finish(review_claim.REVIEW_TASK_ID)
-        expected += ['review-claim']
+        expected += ['review-claim-1']
         assert state.corrections == 1
         call['submission_decision'] = 'approve'
     if branch.startswith('timeout'):

@@ -2,16 +2,24 @@
 
 from functools import partial
 
-from . import checklist
+from . import checklist, speech, supervisor
 from .action_loop import Action, advance
 from .bridge import CallBridge, FieldDefinition
 from .call_state import InMemoryStateStore
-from .workflows import assistance, claim_intake, identity, policy_lookup, review_claim, submit_claim
+from .workflows import endings, assistance, claim_intake, identity, policy_lookup, review_claim, safety, submit_claim
 
-DEFAULT_PURPOSE = "Verify the caller's GEICO policy, then help them report an auto loss."
+DEFAULT_PURPOSE = (
+    "You are Alex, a warm, polite and friendly GEICO claims agent. Talk like a real person and keep the "
+    "conversation natural and engaging. Say numbers and codes one digit at a time. "
+    "Verify the caller's GEICO policy, then help them report an auto loss. "
+    "Never say 'one moment', 'just a moment' or that you are getting, processing or pulling something up. "
+    "If there is a long pause and you have nothing to ask, make light small talk, such as asking how their day is going or "
+    "how the weather is where they are. Do this at most once in a call, and skip it if someone was hurt or the caller sounds upset."
+)
 REQUEST_TASK_ID = "confirm-request"
-COMPLETION_TASKS = (REQUEST_TASK_ID, *identity.TASK_IDS, *claim_intake.TASK_IDS, *review_claim.TASK_IDS, *submit_claim.TASK_IDS, *assistance.TASK_IDS)
+COMPLETION_TASKS = tuple(dict.fromkeys((*safety.TASK_IDS, REQUEST_TASK_ID, *identity.TASK_IDS, *claim_intake.TASK_IDS, *review_claim.TASK_IDS, *submit_claim.TASK_IDS, *assistance.TASK_IDS, *endings.TASK_IDS)))
 CAPTURES = {identity.TASK_ID: identity.capture, claim_intake.TASK_ID: claim_intake.capture,
+            claim_intake.DETAILS_TASK_ID: claim_intake.capture_details,
             review_claim.REVIEW_TASK_ID: review_claim.capture}
 REPORT_OWN_LOSS = "report_own_loss"
 OTHER_REQUEST = "other_request"
@@ -58,7 +66,13 @@ def state_for(call, bridge):
 
 
 def end_call(call, bridge):
-    STORE.delete(bridge.get_session_id(call))
+    state = state_for(call, bridge)
+    with state.lock:
+        state.ended = True
+        for timer in state.speech_timers.values():
+            timer.cancel()
+        state.speech_timers.clear()
+        STORE.delete(bridge.get_session_id(call))
 
 
 def next_start_action(call, state, bridge):
@@ -68,7 +82,7 @@ def next_start_action(call, state, bridge):
     if state.result('start_verification') is not None or state.result('start_assistance') is not None:
         return None
     if check.ok:
-        return Action('start_verification', 'guava', lambda: identity.start(call, bridge))
+        return Action('start_verification', 'guava', lambda: identity.start(call, bridge, state))
     return Action('start_assistance', 'guava', lambda: assistance.start(call, bridge))
 
 
@@ -78,7 +92,22 @@ def default_routes(bridge):
 
 def run_checklist(call, state, bridge, routes=None):
     routes = routes or default_routes(bridge)
-    advance(state, lambda current: checklist.evaluate(call, current, bridge, routes))
+    with state.lock:
+        if not state.ended:
+            advance(state, lambda current: checklist.evaluate(call, current, bridge, routes))
+
+
+def on_speech(call, role, text, utterance_id, bridge):
+    state = state_for(call, bridge)
+    with state.lock:
+        if state.ended:
+            return
+        supervisor.record(state, role, text, utterance_id)
+        if role == 'caller':
+            supervisor.settle(call, state, bridge, text, utterance_id)
+        claim_intake.capture_live(call, state, bridge)
+        if review_claim.change_pending(call, state, bridge):
+            supervisor.settle_review(call, state, bridge)
 
 
 def start_call(call, bridge: CallBridge):
@@ -87,12 +116,21 @@ def start_call(call, bridge: CallBridge):
 
 def on_task_complete(call, task_id, bridge, get_state=None, routes=None):
     state = get_state(call) if get_state is not None else state_for(call, bridge)
-    if not state.done(task_id):
-        state.mark_done(task_id)
-        capture = CAPTURES.get(task_id)
-        if capture is not None:
-            capture(call, state, bridge)
-    run_checklist(call, state, bridge, routes)
+    task_id = review_claim.REVIEW_TASK_ID if task_id in review_claim.TASK_IDS else task_id
+    with state.lock:
+        if state.ended or state.stopped:
+            return
+        if state.claim_blocked and task_id not in (*assistance.TASK_IDS, *endings.TASK_IDS):
+            return
+        if not state.done(task_id):
+            state.mark_done(task_id)
+            capture = CAPTURES.get(task_id)
+            if capture is not None:
+                capture(call, state, bridge)
+            if task_id in (identity.TASK_ID, claim_intake.TASK_ID):
+                state.live_keys = ()
+                state.open_task = None
+        run_checklist(call, state, bridge, routes)
 
 
 def register_completions(agent, bridge, get_state=None, routes=None):
@@ -139,7 +177,7 @@ def next_request_action(call, state, bridge):
         if bridge.get_field(call, "request_type") == REPORT_OWN_LOSS:
             claim_intake.start(call, bridge, state)
             return
-        bridge.set_task(call,
+        endings.start(call, bridge, state, 'unsupported',
             "unsupported-request",
             objective=(
                 "This demo only opens new loss reports for verified policyholders. "
@@ -160,6 +198,7 @@ def on_intent_b(call, bridge: CallBridge) -> str | None:
     state = state_for(call, bridge)
     if state.verified_profile is not None or state.result('start_assistance') is not None:
         return CONTINUE_TASK
+    state.open_task = "intent-b-placeholder"
     bridge.set_task(call,
         "intent-b-placeholder",
         objective=(
@@ -189,7 +228,7 @@ def on_question(call, question, bridge) -> str:
     state = state_for(call, bridge)
     submitted = submit_claim.submitted_claim(state)
     if submitted is not None:
-        answer = f'Known facts: the claim has been submitted. Its claim number is {submitted.claim_number}.'
+        answer = f'Known facts: the claim has been submitted. Its claim number is {speech.spell_out(submitted.claim_number)}. Say the claim number character by character.'
     elif submit_claim.submission_uncertain(state):
         answer = 'Known facts: it is not confirmed whether the claim was filed, and no claim number is available. Do not say it succeeded or failed.'
     elif state.verified_profile is not None:
@@ -217,4 +256,3 @@ def register(agent, bridge: CallBridge):
 # Deferred: real Intent B and assistance workflows, on_escalate (no handoff),
 # searchable fields/on_search_query.
 # Future API-backed work belongs in workflow files, not in this coordinator.
-# Hangup triggers still await deterministic caller-completion confirmation.

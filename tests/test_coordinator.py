@@ -8,6 +8,7 @@ import pytest
 from guava import SuggestedAction
 from guava.commands import SetTaskCommand, SendInstructionCommand
 from guava.testing import MockCall
+from supervisor_helpers import safe_generate, after_safety
 
 
 @pytest.fixture
@@ -19,6 +20,7 @@ def adapter(monkeypatch):
     from agent.call_state import InMemoryStateStore
     monkeypatch.setattr(module.coordinator, 'STORE', InMemoryStateStore())
     monkeypatch.setattr(module.coordinator.assistance, 'check_api', Mock(return_value=[]))
+    monkeypatch.setattr(module.SDK_BRIDGE, 'generate', safe_generate)
     return module
 
 
@@ -26,6 +28,7 @@ def test_call_starts_in_verification(adapter):
     from agent.workflows import policy_lookup, identity
 
     call = MockCall()
+    after_safety(adapter.coordinator.state_for(call, adapter.SDK_BRIDGE))
     adapter.coordinator.start_call(call, adapter.SDK_BRIDGE)
     command, = call._command_queue
     assert isinstance(command, SetTaskCommand)
@@ -59,7 +62,7 @@ def profile():
 @pytest.mark.parametrize('stage,expected', [
     ('unverified', 'Known facts: the caller is not verified, so no policy or claim information can be shared.'),
     ('verified', 'Known facts: the claim has not been submitted. The details are still being collected and will be read back for approval first.'),
-    ('submitted', 'Known facts: the claim has been submitted. Its claim number is CLM-A1B2C3D4.'),
+    ('submitted', 'Known facts: the claim has been submitted. Its claim number is C, L, M, A, 1, B, 2, C, 3, D, 4. Say the claim number character by character.'),
 ])
 def test_question_answers_only_from_state(adapter, stage, expected):
     from agent.call_state import ActionResult
@@ -97,6 +100,7 @@ def test_verified_policy_context_precedes_request_task(adapter):
 def test_claim_cannot_start_without_verification(adapter):
     call = MockCall()
     call.set_field('request_type', adapter.coordinator.REPORT_OWN_LOSS)
+    after_safety(adapter.coordinator.state_for(call, adapter.SDK_BRIDGE))
     adapter.coordinator.on_task_complete(call, adapter.coordinator.REQUEST_TASK_ID, adapter.SDK_BRIDGE)
     assert call._command_queue == []
 
@@ -108,6 +112,7 @@ def test_verified_caller_routes_on_recorded_request(adapter, request_type, task)
     adapter.coordinator.on_verified(call, profile(), adapter.SDK_BRIDGE)
     assert call._command_queue[-1].task_id == adapter.coordinator.REQUEST_TASK_ID
     call.set_field('request_type', request_type)
+    after_safety(adapter.coordinator.state_for(call, adapter.SDK_BRIDGE))
     adapter.coordinator.on_task_complete(call, adapter.coordinator.REQUEST_TASK_ID, adapter.SDK_BRIDGE)
     assert call._command_queue[-1].task_id == task
 
@@ -170,5 +175,5 @@ def test_question_after_uncertain_submission(adapter, found):
         state.record(ActionResult('check_submission', 'api', True, SimpleNamespace(claim_number='CLM-FOUND')))
     answer = adapter.coordinator.on_question(call, 'Was it filed?', adapter.SDK_BRIDGE)
     assert 'has not been submitted' not in answer
-    assert ('CLM-FOUND' in answer) is found
+    assert ('C, L, M, F, O, U, N, D' in answer) is found
     assert ('not confirmed whether' in answer) is (not found)
