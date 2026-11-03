@@ -9,13 +9,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .. import api_adapter
-from ..action_loop import Action, advance
+from ..action_loop import Action
 from ..bridge import FieldDefinition
 
 logger = logging.getLogger(__name__)
 OFFER_TASK_ID = 'assistance-offer'
 CALLBACK_OFFER_TASK_ID = 'callback-offer'
 CALLBACK_TASK_ID = 'collect-callback'
+TASK_IDS = (OFFER_TASK_ID, CALLBACK_OFFER_TASK_ID, CALLBACK_TASK_ID)
 UNAVAILABLE_LINE = "I'm sorry, I'm unable to assist you right now. Would you like to talk to a GEICO representative?"
 NO_REP_LINE = 'No GEICO representatives are available right now. Would you like to schedule a callback? We call back on weekdays between 9 AM and 4 PM Pacific.'
 CALLBACK_ZONE = ZoneInfo('America/Los_Angeles')
@@ -177,16 +178,7 @@ def _close_assistance(call, bridge):
     ))
 
 
-def register(agent, bridge, get_state):
-    def on_offer_complete(call):
-        advance(get_state(call), lambda state: next_offer_action(call, state, bridge))
-
-    def on_callback_offer_complete(call):
-        advance(get_state(call), lambda state: next_callback_offer_action(call, state, bridge))
-
-    def on_callback_complete(call):
-        advance(get_state(call), lambda state: next_callback_action(call, state, bridge))
-
+def register(agent, bridge):
     def validate_time(call, value):
         if parse_callback_time(value) is None:
             logger.info('Callback time rejected')
@@ -198,8 +190,5 @@ def register(agent, bridge, get_state):
             return False, 'Ask the caller for a full 10-digit phone number.'
         return True
 
-    bridge.register_task_complete(agent, OFFER_TASK_ID, on_offer_complete)
-    bridge.register_task_complete(agent, CALLBACK_OFFER_TASK_ID, on_callback_offer_complete)
-    bridge.register_task_complete(agent, CALLBACK_TASK_ID, on_callback_complete)
     bridge.register_validator(agent, 'callback_time', validate_time)
     bridge.register_validator(agent, 'callback_phone', validate_phone)

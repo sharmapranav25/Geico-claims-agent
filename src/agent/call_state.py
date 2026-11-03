@@ -17,9 +17,16 @@ class ActionResult:
 class CallState:
     session_id: str
     results: dict[str, ActionResult] = field(default_factory=dict)
+    completed_tasks: set[str] = field(default_factory=set)
     verified_profile: Any = None
     approved_fields: dict[str, Any] | None = None
     submission_reference: str | None = None
+
+    def mark_done(self, task_id):
+        self.completed_tasks.add(task_id)
+
+    def done(self, task_id):
+        return task_id in self.completed_tasks
 
     def record(self, result: ActionResult) -> None:
         self.results[result.name] = result

@@ -10,13 +10,13 @@ from unittest.mock import Mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from agent import api_adapter, coordinator
+from agent import api_adapter, checklist, coordinator
 from agent.action_loop import Action, MAX_ACTIONS, advance
 from agent.call_state import ActionResult, CallState, InMemoryStateStore
 from agent.workflows import assistance, claim_intake, policy_lookup
 
 PROFILE = SimpleNamespace(
-    policy_number='GEC-0001', name='Avery Morgan', phone='628-268-8753',
+    policy_number='1001', name='Michael Johnson', phone='628-268-8753',
     vehicles=(SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry'),),
 )
 
@@ -45,8 +45,8 @@ class FakeBridge:
 @pytest.fixture
 def call():
     return {
-        'session_id': 'session-one', 'policy_number': 'GEC 0001',
-        'caller_name': 'Avery Morgan', 'caller_phone': '628-268-8753',
+        'session_id': 'session-one', 'policy_number': '10 01',
+        'caller_name': 'Michael Johnson', 'caller_phone': '628-268-8753',
         'vehicle': '2021 Toyota Camry', 'occurred_at': '2026-11-01T15:00:00-08:00',
         'location': 'Main and 5th', 'description': 'Rear-ended at a light.',
         'loss_type': 'collision', 'request_type': coordinator.REPORT_OWN_LOSS,
@@ -115,7 +115,7 @@ def test_verified_path_records_fetch_before_announcement(api, call, caplog):
     assert state.result('announce_verification').ok is True
     assert state.verified_profile is PROFILE
     assert evaluate.call_count == 3
-    client.get_policy.assert_called_once_with('GEC-0001')
+    client.get_policy.assert_called_once_with('1001')
     bridge.set_task.assert_called_once()
     assert [record.getMessage() for record in caplog.records if record.name == 'agent.action_loop'] == [
         'Action fetch_policy target=api ok=True',
@@ -300,12 +300,15 @@ def test_completing_twice_does_not_repeat_actions(api, call, workflow):
     bridge = FakeBridge()
     state = CallState('session')
     if workflow == 'policy':
-        policy_lookup.register(object(), bridge, lambda call: state,
-                               partial(coordinator.on_verified, bridge=bridge), Mock())
+        policy_lookup.register(object(), bridge)
+        coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(
+            partial(coordinator.on_verified, bridge=bridge), Mock(),
+        ))
         handler = bridge.completions[policy_lookup.TASK_ID]
     else:
         state.verified_profile = PROFILE
-        claim_intake.register(object(), bridge, lambda call: state, Mock())
+        claim_intake.register(object(), bridge)
+        coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(Mock(), Mock()))
         handler = bridge.completions[claim_intake.TASK_ID]
     handler(call)
     handler(call)
@@ -340,8 +343,8 @@ def test_request_action_is_gated_and_runs_once(api, call, monkeypatch, request_t
     action = coordinator.next_request_action(call, state, bridge)
     assert (action.name, action.target) == ('start_request', 'guava')
     bridge.set_task.assert_not_called()
-    coordinator.on_request_confirmed(call, bridge)
-    coordinator.on_request_confirmed(call, bridge)
+    coordinator.on_task_complete(call, coordinator.REQUEST_TASK_ID, bridge)
+    coordinator.on_task_complete(call, coordinator.REQUEST_TASK_ID, bridge)
     assert state.result('start_request').ok is True
     bridge.set_task.assert_called_once()
     factory.assert_not_called()

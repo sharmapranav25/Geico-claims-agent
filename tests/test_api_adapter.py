@@ -31,17 +31,17 @@ def adapter():
 def test_list_and_read_seeded_policy(adapter):
     policies = adapter.list_policies()
     assert len(policies) == 15
-    assert any(p.policy_number == "GEC-0001" and p.name == "Avery Morgan" for p in policies)
-    profile = adapter.get_policy("GEC-0001")
+    assert any(p.policy_number == "1001" and p.name == "Michael Johnson" for p in policies)
+    profile = adapter.get_policy("1001")
     assert isinstance(profile, api.PolicyProfile)
-    assert profile.policy_number == "GEC-0001"
-    assert profile.name == "Avery Morgan"
+    assert profile.policy_number == "1001"
+    assert profile.name == "Michael Johnson"
     assert profile.phone == "628-268-8753"
     assert profile.vehicles[0].vehicle_id == "V01-1"
     assert profile.drivers[0].name == profile.name
     assert profile.beneficiaries
     assert profile.claims[0].claim_number == "CLM-SEED-0001"
-    assert adapter.get_policy("GEC-0007").claims_against[0].filed_under_policy == "GEC-0001"
+    assert adapter.get_policy("1007").claims_against[0].filed_under_policy == "1001"
     with pytest.raises(ValidationError):
         profile.name = "Changed"
     with pytest.raises(ValidationError):
@@ -67,14 +67,14 @@ def test_update_rejects_read_only_fields(field):
 
 
 def test_write_rejects_dict_or_profile(adapter):
-    for value in ({"name": "Changed"}, adapter.get_policy("GEC-0001")):
+    for value in ({"name": "Changed"}, adapter.get_policy("1001")):
         with pytest.raises(TypeError, match="ClaimDraftUpdate"):
-            adapter.update_claim_draft("GEC-0001", value)
+            adapter.update_claim_draft("1001", value)
 
 
 def test_live_draft_round_trip_and_submit(adapter):
-    # GEC-0013 has no activity in the seed. Reruns append a new test claim.
-    number = "GEC-0013"
+    # 1013 has no activity in the seed. Reruns append a new test claim.
+    number = "1013"
     before = adapter.get_policy(number)
     assert before.open_draft is None, "Existing draft: restart the mock API before testing"
     update = api.ClaimDraftUpdate(
@@ -108,20 +108,20 @@ def test_live_draft_round_trip_and_submit(adapter):
 
 
 def test_raw_forbidden_field_and_adapter_error_mapping(adapter):
-    before = adapter.get_policy("GEC-0014")
+    before = adapter.get_policy("1014")
     with httpx.Client(base_url=os.environ["MOCK_API_URL"], timeout=5) as client:
-        response = client.post("/policies/GEC-0014/claims/draft", json={"name": "Changed"})
+        response = client.post("/policies/1014/claims/draft", json={"name": "Changed"})
     assert response.status_code == 422
     with pytest.raises(api.ClaimValidationError) as error:
         api._response_json(response)
     assert error.value.status_code == 422
     assert error.value.detail == response.json()["detail"]
-    assert adapter.get_policy("GEC-0014") == before
+    assert adapter.get_policy("1014") == before
 
 
 def test_live_invalid_vehicle_is_wrapped(adapter):
     with pytest.raises(api.ClaimValidationError) as error:
-        adapter.update_claim_draft("GEC-0014", api.ClaimDraftUpdate(vehicle_id="V01-1"))
+        adapter.update_claim_draft("1014", api.ClaimDraftUpdate(vehicle_id="V01-1"))
     assert error.value.status_code == 400
     assert error.value.detail == "vehicle_id must reference a vehicle on this policy"
 
@@ -136,7 +136,7 @@ def test_unknown_policy(adapter):
 def test_live_submission_reference_replay_adds_one_claim(adapter):
     from uuid import uuid4
 
-    number = 'GEC-0015'
+    number = '1015'
     before = adapter.get_policy(number)
     adapter.update_claim_draft(number, api.ClaimDraftUpdate(
         occurred_at='2026-11-01T15:00:00-08:00', location='Test lot',
@@ -157,6 +157,6 @@ def test_submission_body_only_when_reference_given(adapter, monkeypatch, referen
 
     request = Mock()
     monkeypatch.setattr(adapter, '_request', request)
-    adapter.submit_claim_draft('GEC-0015', submission_reference=reference)
-    assert request.call_args.args == ('POST', 'policies/GEC-0015/claims/draft/submit', api.SubmittedClaim)
+    adapter.submit_claim_draft('1015', submission_reference=reference)
+    assert request.call_args.args == ('POST', 'policies/1015/claims/draft/submit', api.SubmittedClaim)
     assert request.call_args.kwargs == ({} if reference is None else {'json': {'submission_reference': reference}})

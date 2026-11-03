@@ -6,17 +6,18 @@ from difflib import SequenceMatcher
 from typing import Literal
 
 from .. import api_adapter
-from ..action_loop import Action, advance
+from ..action_loop import Action
 from ..bridge import CallBridge, FieldDefinition
 
 logger = logging.getLogger(__name__)
 
 TASK_ID = "verify-policy"
+TASK_IDS = (TASK_ID,)
 # Tolerates a transcription slip in a name, not a different name.
 NAME_MATCH_THRESHOLD = 0.85
 # Required caller-provided inputs; these do not modify the policy profile.
 CHECKLIST = [
-    FieldDefinition(key="policy_number", description="Ask for the policy number for the relevant GEICO policy.", field_type="text", required=True, sensitive=True),
+    FieldDefinition(key="policy_number", question="What is your policy number?", description="The policy number, digits only. Do not record letters.", field_type="digit_sequence", required=True, sensitive=True),
     FieldDefinition(key="caller_name", description="Ask the caller for their own full name, not someone else's name.", field_type="text", required=True),
     FieldDefinition(key="caller_phone", description="Ask the caller for their own phone number on the policy.", field_type="digit_sequence", required=True, sensitive=True),
 ]
@@ -24,8 +25,8 @@ CHECKLIST = [
 
 def normalize_policy_number(value: str) -> str:
     compact = ''.join(character for character in value if character.isalnum()).upper()
-    if re.fullmatch(r'GEC[0-9]{4}', compact):
-        return 'GEC-' + compact[3:]
+    if compact.isdigit():
+        return compact
     return value.strip()
 
 
@@ -128,13 +129,9 @@ def next_action(call, state, bridge, on_verified, on_unavailable):
     return Action('announce_verification', 'guava', lambda: _announce_mismatch(call, bridge))
 
 
-def register(agent, bridge: CallBridge, get_state, on_verified, on_unavailable):
+def register(agent, bridge: CallBridge):
     # Register at agent setup, not every time a caller enters the workflow.
     def on_validate_policy_number(call, value):
         return validate_policy_number(value)
 
-    def on_policy_complete(call):
-        advance(get_state(call), lambda state: next_action(call, state, bridge, on_verified, on_unavailable))
-
     bridge.register_validator(agent, "policy_number", on_validate_policy_number)
-    bridge.register_task_complete(agent, TASK_ID, on_policy_complete)

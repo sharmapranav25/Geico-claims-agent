@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from agent import api_adapter
+from agent import api_adapter, checklist, coordinator
 from agent.call_state import CallState
 from agent.workflows import policy_lookup
 
@@ -39,7 +39,7 @@ def local_api(monkeypatch):
     response = {
         'status': 200,
         'body': json.dumps({
-            'policy_number': 'GEC-0001', 'name': 'Avery Morgan',
+            'policy_number': '1001', 'name': 'Michael Johnson',
             'phone': '628-268-8753', 'vehicles': [], 'drivers': [],
             'beneficiaries': [], 'claims': [], 'open_draft': None,
             'claims_against': [],
@@ -81,19 +81,19 @@ def local_api(monkeypatch):
 
 def test_reachable_api_returns_typed_result(local_api):
     with api_adapter.APIAdapter() as api:
-        result = api.get_policy('GEC-0001')
+        result = api.get_policy('1001')
 
     assert isinstance(result, api_adapter.PolicyProfile)
-    assert result.policy_number == 'GEC-0001'
-    assert result.name == 'Avery Morgan'
+    assert result.policy_number == '1001'
+    assert result.name == 'Michael Johnson'
     assert result.phone == '628-268-8753'
-    assert local_api['paths'] == ['/policies/GEC-0001']
+    assert local_api['paths'] == ['/policies/1001']
 
 
 def test_connection_refused_raises_unavailable(unavailable_api):
     with api_adapter.APIAdapter() as api:
         with pytest.raises(api_adapter.APIUnavailableError, match='Mock API request failed') as error:
-            api.get_policy('GEC-0001')
+            api.get_policy('1001')
 
     assert isinstance(error.value.__cause__, httpx.ConnectError)
 
@@ -103,29 +103,29 @@ def test_nonresponding_api_times_out_within_bound(local_api):
     with api_adapter.APIAdapter() as api:
         started = monotonic()
         with pytest.raises(api_adapter.APIUnavailableError, match='Mock API request failed') as error:
-            api.get_policy('GEC-0001')
+            api.get_policy('1001')
         elapsed = monotonic() - started
 
     # Exercise the unchanged five-second production timeout, with three seconds
     # of scheduling headroom. The server's 12-second safety release exceeds this.
     assert elapsed < 8.0, f'Request took {elapsed:.2f}s; expected less than 8s'
     assert isinstance(error.value.__cause__, httpx.ReadTimeout)
-    assert local_api['paths'] == ['/policies/GEC-0001']
+    assert local_api['paths'] == ['/policies/1001']
 
 
 @pytest.mark.parametrize('status,body,message', [
     (500, b'{"detail":"Service failed"}', 'Service failed'),
     (200, b'not JSON', 'API returned invalid JSON'),
-    (200, b'{"policy_number":"GEC-0001"}', 'API response does not match the expected schema'),
+    (200, b'{"policy_number":"1001"}', 'API response does not match the expected schema'),
 ], ids=['http-500', 'invalid-json', 'wrong-schema'])
 def test_bad_response_never_returns_result(local_api, status, body, message):
     local_api.update(status=status, body=body)
     with api_adapter.APIAdapter() as api:
         with pytest.raises(api_adapter.APIResponseError, match=message) as error:
-            api.get_policy('GEC-0001')
+            api.get_policy('1001')
 
     assert error.value.status_code == status
-    assert local_api['paths'] == ['/policies/GEC-0001']
+    assert local_api['paths'] == ['/policies/1001']
 
 
 class FakeBridge:
@@ -150,13 +150,15 @@ class FakeBridge:
 def test_unavailable_api_does_not_escape_workflow_or_verify(unavailable_api):
     bridge = FakeBridge()
     call = {
-        'policy_number': 'GEC-0001', 'caller_name': 'Avery Morgan',
+        'policy_number': '1001', 'caller_name': 'Michael Johnson',
         'caller_phone': '628-268-8753',
     }
     state = CallState('test-session')
-    policy_lookup.register(object(), bridge, lambda call: state,
-                           on_verified=lambda call, profile: bridge.set_task(call, 'verified', ''),
-                           on_unavailable=lambda call: bridge.set_task(call, 'assistance-offer', ''))
+    policy_lookup.register(object(), bridge)
+    coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(
+        on_verified=lambda call, profile: bridge.set_task(call, 'verified', ''),
+        on_unavailable=lambda call: bridge.set_task(call, 'assistance-offer', ''),
+    ))
     policy_lookup.start(call, bridge)
 
     # No injected exceptions: both registered callbacks use the real adapter.
