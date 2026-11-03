@@ -187,9 +187,11 @@ def _raise_conflict(state, answer):
     if not answer or not answer['inconsistent']:
         return False
     fields = tuple(sorted(set(answer['fields'])))
-    if fields in state.raised:
+    # The same conflict is raised once, but a change to those facts can raise it again.
+    raised = (fields, tuple(str(state.fact(field)) for field in fields if field != 'description'))
+    if raised in state.raised:
         return False
-    state.raised.add(fields)
+    state.raised.add(raised)
     logger.info('Supervisor conflict fields %s', ', '.join(fields))
     return True
 

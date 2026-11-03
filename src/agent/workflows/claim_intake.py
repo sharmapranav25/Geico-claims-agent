@@ -186,7 +186,7 @@ def next_action(call, state, bridge, on_unavailable):
                 caller_phone=state.fact("caller_phone"),
                 occurred_at=verification.parse_occurred_at(state.fact("occurred_at")),
                 location=state.fact("location"),
-                description=state.fact("description"),
+                description=state.fact("incident_report") or state.fact("description"),
                 vehicle_id=vehicle_id,
                 loss_type=state.fact("loss_type"),
             )
