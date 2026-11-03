@@ -41,6 +41,8 @@ def start(call, bridge, state, say=()):
                         field_type='multiple_choice', choices=(*labels, NOT_ON_POLICY)),
         FieldDefinition('occurred_at', f'The date and time the loss happened. {speech.date_context()} '
                         'If the caller gives only a time or only a day, ask for the missing part. Never assume a date. '
+                        "If they say today, yesterday, tomorrow, hours ago or anything else relative, do not work it out; "
+                        f"say exactly: '{verification.EXACT_TIME_LINE}' "
                         'Record it as ISO 8601, like 2026-10-31T15:00:00.' + skip,
                         question='What date and time did it happen?', required=False),
         FieldDefinition('location', 'Where the loss happened.' + skip, question='Where did it happen?', required=False),
@@ -63,9 +65,27 @@ def start(call, bridge, state, say=()):
         'they already described without asking again, and ask only for what '
         'is still missing. Do not decide fault, coverage or payment, and do '
         'not say a claim was created or submitted. Do not ask if there is anything else, close the call, '
-        'or say the report is filed or passed along. ' + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)
-    if keep_description:
-        supervisor.check_description(call, state, bridge)
+        'or say the report is filed or passed along. Do not ask what kind of loss it was. '
+        f'{speech.date_context()} Never question or comment on a date the caller gives; the application checks dates. ' + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)
+
+
+def _ask_details(call, bridge, state):
+    from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE
+
+    state.open_task = DETAILS_TASK_ID
+    bridge.set_task(call, DETAILS_TASK_ID,
+        fields=[FieldDefinition('more_details', "What the caller adds about what happened, in the caller's own words. "
+                                "Record none if they do not know or have nothing to add.", question=state.details_question)],
+        completion_criteria='Complete as soon as the answer is recorded.',
+        objective="Ask the question once using its exact wording and ask nothing else. Do not read the details back. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)
+
+
+def capture_details(call, state, bridge):
+    value = bridge.get_field(call, 'more_details')
+    state.open_task = None
+    if isinstance(value, str) and value.strip() and value.strip().rstrip('.').lower() != 'none':
+        previous = (state.fact('description') or '').rstrip('.!? ')
+        state.set_fact('description', previous + '. ' + value.strip().lstrip('.!? '))
 
 
 def capture_live(call, state, bridge):
@@ -80,11 +100,12 @@ def capture_live(call, state, bridge):
         if value == state.live_seen.get(key) or value is None or not str(value).strip():
             continue
         state.live_seen[key] = value
-        if key in ('occurred_at', 'stated_time') and verification.validate_occurred_at(value) is not True:
+        if value == NOT_ON_POLICY:
             continue
-        fact_key = 'occurred_at' if key == 'stated_time' else key
-        state.set_fact(fact_key, value)
-        supervisor.on_fact_changed(call, state, bridge, fact_key)
+        if key == 'occurred_at' and verification.validate_occurred_at(value) is not True:
+            continue
+        state.set_fact(key, value)
+        supervisor.on_fact_changed(call, state, bridge)
 
 
 def capture(call, state, bridge):
@@ -100,12 +121,20 @@ def capture(call, state, bridge):
         logger.info('Claim fact corrected')
 
 
+def _last_caller_line(state):
+    return next((line[1] for line in reversed(state.lines) if line[0] == 'caller'), '')
+
+
 def apply_correction(state, field, value):
     from . import review_claim
 
     state.corrections += 1
     labels = tuple(vehicle_label(vehicle) for vehicle in state.verified_profile.vehicles)
-    if verification.correction_is_valid(field, value, labels, LOSS_TYPES):
+    if field == 'occurred_at' and verification.is_relative_time(_last_caller_line(state)):
+        logger.info('Claim correction rejected')
+        state.clear_results('start_review')
+        state.review_prefix = verification.EXACT_TIME_LINE + ' '
+    elif verification.correction_is_valid(field, value, labels, LOSS_TYPES):
         logger.info('Claim fact corrected')
         state.loss_type_corrected = state.loss_type_corrected or field == 'loss_type'
         state.set_fact(field, value)
@@ -234,6 +263,10 @@ def _announce_missing(call, bridge, state, missing):
 
 def register(agent, bridge: CallBridge):
     def on_validate_occurred_at(call, value):
+        from ..coordinator import state_for
+
+        if verification.is_relative_time(_last_caller_line(state_for(call, bridge))):
+            return False, f"Do not record that. Say exactly: '{verification.EXACT_TIME_LINE}'"
         return verification.validate_occurred_at(value)
 
     bridge.register_validator(agent, 'occurred_at', on_validate_occurred_at)

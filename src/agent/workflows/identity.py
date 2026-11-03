@@ -40,10 +40,6 @@ def identity_fields(spell_name=False, ask_request=False):
                                                   field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST))]),
         FieldDefinition('description', "What happened. Record what happened in the caller's own words, for example 'my mother', not 'the caller's mother'." + volunteer, required=False),
         FieldDefinition('location', 'Where it happened.' + volunteer, required=False),
-        FieldDefinition('loss_type', 'The kind of loss.' + volunteer, required=False,
-                        field_type='multiple_choice', choices=LOSS_TYPES),
-        FieldDefinition('stated_time', f'The stated loss time as ISO 8601, like 2026-10-31T15:00:00. {speech.date_context()}'
-                        + volunteer, required=False),
     ]
 
 
@@ -65,7 +61,7 @@ def start(call, bridge, state=None):
 
 def _start_live(call, state, bridge):
     state.open_task = TASK_ID
-    state.live_keys = ('description', 'location', 'loss_type', 'stated_time')
+    state.live_keys = ('description', 'location')
     state.live_seen = {key: bridge.get_field(call, key) for key in state.live_keys}
 
 
@@ -76,9 +72,6 @@ def capture(call, state, bridge):
         value = bridge.get_field(call, key)
         if value is not None and str(value).strip():
             state.set_fact(key, policy_lookup.normalize_policy_number(value) if key == 'policy_number' else value)
-    value = bridge.get_field(call, 'stated_time')
-    if value is not None and str(value).strip() and verification.validate_occurred_at(value) is True:
-        state.set_fact('occurred_at', value)
 
 
 def _digits(value):

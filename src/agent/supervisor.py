@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 
+from . import speech
 from .workflows import claim_intake
 
 logger = logging.getLogger(__name__)
@@ -212,7 +213,7 @@ def on_fact_changed(call, state, bridge):
         with state.lock:
             if _inactive(state):
                 return
-        answer = ask(bridge, FACTS_PROMPT + json.dumps(facts), FACTS_SCHEMA, check_facts)
+        answer = ask(bridge, FACTS_PROMPT + speech.date_context() + '\n' + json.dumps(facts), FACTS_SCHEMA, check_facts)
         with state.lock:
             if _inactive(state) or facts != claim_intake.claim_facts(state):
                 return
@@ -290,7 +291,7 @@ def _start_closeout(call, state, bridge, summary):
         if summary:
             answer = ask(bridge, SUMMARY_PROMPT + json.dumps({'description': facts['description']}), SUMMARY_SCHEMA, check_summary)
         else:
-            answer = ask(bridge, FACTS_PROMPT + json.dumps(facts), FACTS_SCHEMA, check_facts)
+            answer = ask(bridge, FACTS_PROMPT + speech.date_context() + '\n' + json.dumps(facts), FACTS_SCHEMA, check_facts)
         with state.lock:
             if _inactive(state) or generation != state.closeout_generation:
                 return

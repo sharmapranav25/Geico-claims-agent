@@ -272,15 +272,19 @@ def test_live_fields_baseline_and_stale_value_do_not_void_approval(flow, monkeyp
 
 def test_live_times_validate_and_completion_closes_window(flow, monkeypatch):
     monkeypatch.setattr(supervisor, 'on_fact_changed', Mock())
-    identity.start(flow.call, flow.bridge, flow.state)
+    flow.state.verified_profile = PROFILE
+    claim_intake.start(flow.call, flow.bridge, flow.state)
+    flow.state.set_fact('occurred_at', None)
+    flow.state.live_keys = ('occurred_at',)
+    flow.state.live_seen = {}
     for invalid in ('tomorrow', '2999-01-01T12:00:00'):
-        flow.call['stated_time'] = invalid
+        flow.call['occurred_at'] = invalid
         claim_intake.capture_live(flow.call, flow.state, flow.bridge)
         assert flow.state.fact('occurred_at') is None
-    flow.call['stated_time'] = '2026-01-01T12:00:00'
+    flow.call['occurred_at'] = '2026-01-01T12:00:00'
     claim_intake.capture_live(flow.call, flow.state, flow.bridge)
-    assert flow.state.fact('occurred_at') == flow.call['stated_time']
-    coordinator.on_task_complete(flow.call, identity.TASK_ID, flow.bridge)
+    assert flow.state.fact('occurred_at') == flow.call['occurred_at']
+    coordinator.on_task_complete(flow.call, claim_intake.TASK_ID, flow.bridge)
     assert flow.state.live_keys == ()
 
 
@@ -419,7 +423,7 @@ def test_final_conflict_only_speaks_field_labels_and_dedupes_live_conflict(flow)
     wait_closeout(flow.state)
     assert flow.bridge.tasks[-1].say[0].startswith("One thing to check: the location and the date and time don't seem to match. Which is right? ")
     assert 'PRIVATE REASON' not in flow.bridge.tasks[-1].say[0]
-    assert ('location', 'occurred_at') in flow.state.raised
+    assert any(item[0] == ('location', 'occurred_at') for item in flow.state.raised)
     with flow.state.lock:
         claim_intake.apply_addition(flow.state, 'More detail')
         coordinator.run_checklist(flow.call, flow.state, flow.bridge)
@@ -513,3 +517,222 @@ def test_danger_wins_over_an_open_ending(flow):
     flow.state.ending = 'declined'
     classify(flow, 'someone needs help now', {'danger': True})
     assert flow.bridge.instructions == [safety.LINE_911 + ' Nothing has been submitted.']
+
+
+def test_model_proposes_loss_type_and_collection_never_asks(flow):
+    flow.state.verified_profile = PROFILE
+    claim_intake.start(flow.call, flow.bridge, flow.state)
+    task = flow.bridge.tasks[-1]
+    assert 'loss_type' not in [field.key for field in task.fields]
+    assert 'Never question or comment on a date' in task.objective and 'Today is' in task.objective
+    claim_intake.store_summary(flow.state, 'A summary.', 'theft')
+    assert flow.state.fact('loss_type') == 'theft'
+
+
+def test_caller_loss_type_correction_outlasts_the_model(flow):
+    flow.state.verified_profile = PROFILE
+    claim_intake.apply_correction(flow.state, 'loss_type', 'theft')
+    claim_intake.store_summary(flow.state, 'A summary.', 'collision')
+    assert flow.state.fact('loss_type') == 'theft'
+
+
+def reach_review(flow):
+    collect(flow)
+    coordinator.run_checklist(flow.call, flow.state, flow.bridge)
+    wait_closeout(flow.state)
+    assert flow.bridge.tasks[-1].task_id in review_claim.TASK_IDS
+
+
+def reviews(flow):
+    return [task for task in flow.bridge.tasks if task.task_id in review_claim.TASK_IDS]
+
+
+def test_change_is_saved_and_read_back_while_the_task_stays_open(flow):
+    reach_review(flow)
+    flow.call.update(submission_decision='change', corrected_field='loss_type', corrected_value='other')
+    coordinator.on_speech(flow.call, 'agent', 'Updating that.', None, flow.bridge)
+    until(lambda: len(reviews(flow)) == 2)
+    assert flow.state.fact('loss_type') == 'other'
+    assert "type of loss down as other" in reviews(flow)[-1].say[0]
+    assert flow.client.update_claim_draft.call_args.args[1].loss_type == 'other'
+    coordinator.on_speech(flow.call, 'agent', 'Still reading.', None, flow.bridge)
+    time.sleep(0.05)
+    assert len(reviews(flow)) == 2 and flow.state.corrections == 1
+
+
+def test_a_partly_recorded_change_waits_for_its_field(flow):
+    reach_review(flow)
+    flow.call.update(submission_decision='change', corrected_value='other')
+    flow.call.pop('corrected_field', None)
+    assert not review_claim.change_pending(flow.call, flow.state, flow.bridge)
+    flow.call['corrected_field'] = 'loss_type'
+    assert review_claim.change_pending(flow.call, flow.state, flow.bridge)
+
+
+def test_approval_never_files_over_an_unapplied_change(flow):
+    reach_review(flow)
+    flow.call.update(submission_decision='approve', corrected_field='loss_type', corrected_value='theft')
+    coordinator.on_task_complete(flow.call, review_claim.REVIEW_TASK_ID, flow.bridge)
+    wait_closeout(flow.state)
+    flow.client.submit_claim_draft.assert_not_called()
+    assert flow.state.fact('loss_type') == 'theft'
+    assert len(reviews(flow)) == 2
+    coordinator.on_task_complete(flow.call, review_claim.REVIEW_TASK_ID, flow.bridge)
+    flow.client.submit_claim_draft.assert_called_once()
+    assert flow.client.update_claim_draft.call_args.args[1].loss_type == 'theft'
+
+
+def missing_details(flow, involved=False):
+    def generate(prompt, json_schema):
+        if json_schema == supervisor.DESCRIPTION_SCHEMA:
+            return json.dumps({key: involved if key == 'other_party_involved' else key == 'what_happened' for key in json_schema['properties']})
+        return safe_generate(prompt, json_schema)
+    flow.bridge.generate = generate
+
+
+@pytest.mark.parametrize('involved,question', [
+    (False, 'Can you tell me a bit more about how it happened and what you were doing at the time?'),
+    (True, 'Can you tell me a bit more about how it happened, what you were doing at the time and what the other party did?'),
+])
+def test_missing_details_get_one_question_before_the_read_back(flow, involved, question):
+    missing_details(flow, involved)
+    collect(flow)
+    coordinator.run_checklist(flow.call, flow.state, flow.bridge)
+    wait_closeout(flow.state)
+    until(lambda: flow.bridge.tasks and flow.bridge.tasks[-1].task_id == claim_intake.DETAILS_TASK_ID)
+    assert flow.bridge.tasks[-1].fields[0].question == question
+    assert flow.state.result('write_summary') is None
+    flow.call['more_details'] = 'I was backing out slowly.'
+    coordinator.on_task_complete(flow.call, claim_intake.DETAILS_TASK_ID, flow.bridge)
+    wait_closeout(flow.state)
+    assert flow.state.fact('description').endswith('I was backing out slowly.')
+    assert flow.bridge.tasks[-1].task_id in review_claim.TASK_IDS
+
+
+def test_caller_with_nothing_to_add_moves_on_and_is_not_asked_again(flow):
+    missing_details(flow)
+    collect(flow)
+    description = flow.state.fact('description')
+    coordinator.run_checklist(flow.call, flow.state, flow.bridge)
+    until(lambda: flow.bridge.tasks and flow.bridge.tasks[-1].task_id == claim_intake.DETAILS_TASK_ID)
+    flow.call['more_details'] = 'None.'
+    coordinator.on_task_complete(flow.call, claim_intake.DETAILS_TASK_ID, flow.bridge)
+    wait_closeout(flow.state)
+    assert flow.state.fact('description') == description
+    claim_intake.apply_addition(flow.state, 'More words.')
+    coordinator.run_checklist(flow.call, flow.state, flow.bridge)
+    wait_closeout(flow.state)
+    assert [task.task_id for task in flow.bridge.tasks].count(claim_intake.DETAILS_TASK_ID) == 1
+
+
+def test_details_check_failure_never_blocks_the_read_back(flow):
+    flow.bridge.generate = Mock(side_effect=RuntimeError('offline'))
+    reach_review(flow)
+    assert claim_intake.DETAILS_TASK_ID not in [task.task_id for task in flow.bridge.tasks]
+
+
+def test_summary_only_sees_what_happened(flow):
+    prompts = []
+    def generate(prompt, json_schema):
+        prompts.append((json_schema, prompt))
+        return safe_generate(prompt, json_schema)
+    flow.bridge.generate = generate
+    reach_review(flow)
+    summary = next(prompt for schema, prompt in prompts if schema == supervisor.SUMMARY_SCHEMA)
+    assert json.loads(summary.split('\n')[-1]) == {'description': flow.state.fact('description')}
+
+
+def test_claim_files_third_person_report_while_read_back_says_you(flow):
+    def generate(prompt, json_schema):
+        if json_schema == supervisor.SUMMARY_SCHEMA:
+            return json.dumps({'summary': 'You were hit.', 'report': 'The policyholder was hit.', 'loss_type': 'collision'})
+        return safe_generate(prompt, json_schema)
+    flow.bridge.generate = generate
+    reach_review(flow)
+    assert flow.client.update_claim_draft.call_args.args[1].description == 'The policyholder was hit.'
+    assert 'You were hit.' in reviews(flow)[-1].say[0]
+
+
+def test_failed_summary_files_the_callers_words(flow):
+    flow.bridge.generate = Mock(side_effect=RuntimeError('offline'))
+    reach_review(flow)
+    assert flow.client.update_claim_draft.call_args.args[1].description == flow.state.fact('description')
+
+
+def test_conflict_can_be_raised_again_after_the_facts_change(flow):
+    collect(flow)
+    answer = {'inconsistent': True, 'fields': ['description', 'vehicle'], 'reason': 'private'}
+    assert supervisor._raise_conflict(flow.state, answer)
+    assert not supervisor._raise_conflict(flow.state, answer)
+    flow.state.set_fact('vehicle', '2022 Honda Civic')
+    assert supervisor._raise_conflict(flow.state, answer)
+
+
+@pytest.mark.parametrize('line,relative', [
+    ('It happened today, five hours ago.', True), ('yesterday at 2 p.m.', True), ('Last night', True),
+    ('November first at five p.m.', False), ('yesterday, November 1st at 5', False), ('11/01 at 5', False), ('On Main Street', False),
+])
+def test_relative_times_are_recognized(line, relative):
+    assert verification.is_relative_time(line) is relative
+
+
+def test_relative_date_is_refused_by_code_and_exact_date_is_accepted(flow):
+    claim_intake.register(object(), flow.bridge)
+    validate = flow.bridge.validators['occurred_at']
+    supervisor.record(flow.state, 'caller', 'It happened today, five hours ago.', 'time')
+    valid, message = validate(flow.call, '2026-11-02T01:26:00')
+    assert valid is False and verification.EXACT_TIME_LINE in message
+    supervisor.record(flow.state, 'caller', 'November first at five p.m.', 'time')
+    assert validate(flow.call, '2026-11-01T17:00:00') is True
+
+
+def test_read_back_correction_with_a_relative_date_is_refused(flow):
+    reach_review(flow)
+    before = flow.state.fact('occurred_at')
+    supervisor.record(flow.state, 'caller', 'It was yesterday', 'fix')
+    claim_intake.apply_correction(flow.state, 'occurred_at', '2026-11-01T17:00:00')
+    assert flow.state.fact('occurred_at') == before
+    assert flow.state.review_prefix == verification.EXACT_TIME_LINE + ' '
+
+
+def test_recorded_approval_files_at_once_after_the_read_back_was_spoken(flow):
+    reach_review(flow)
+    flow.call['submission_decision'] = 'approve'
+    assert not review_claim.change_pending(flow.call, flow.state, flow.bridge)
+    coordinator.on_speech(flow.call, 'agent', "So here's what I have.", None, flow.bridge)
+    until(lambda: flow.client.submit_claim_draft.called)
+    flow.client.submit_claim_draft.assert_called_once()
+
+
+def test_stale_approval_cannot_file_a_changed_claim(flow):
+    reach_review(flow)
+    flow.call.update(submission_decision='approve', corrected_field='loss_type', corrected_value='theft')
+    coordinator.on_task_complete(flow.call, review_claim.REVIEW_TASK_ID, flow.bridge)
+    wait_closeout(flow.state)
+    coordinator.on_speech(flow.call, 'agent', "So here's what I have.", None, flow.bridge)
+    time.sleep(0.05)
+    flow.client.submit_claim_draft.assert_not_called()
+
+
+def test_each_re_read_gets_a_new_task_id_that_still_completes_the_review(flow):
+    reach_review(flow)
+    assert reviews(flow)[0].task_id == review_claim.REVIEW_TASK_ID
+    flow.call.update(submission_decision='add', corrected_value='A bumper broke.')
+    coordinator.on_speech(flow.call, 'agent', 'Updating that.', None, flow.bridge)
+    until(lambda: len(reviews(flow)) == 2)
+    new_id = reviews(flow)[1].task_id
+    assert new_id == review_claim.REVIEW_TASK_ID + '-1' and new_id in coordinator.COMPLETION_TASKS
+    flow.call['submission_decision'] = 'approve'
+    coordinator.on_task_complete(flow.call, new_id, flow.bridge)
+    flow.client.submit_claim_draft.assert_called_once()
+
+
+def test_approval_with_a_new_value_but_no_new_field_counts_as_an_addition(flow):
+    reach_review(flow)
+    flow.state.review_seen = ('vehicle', None)
+    flow.call.update(submission_decision='approve', corrected_field='vehicle', corrected_value='a motorcyclist')
+    coordinator.on_task_complete(flow.call, review_claim.REVIEW_TASK_ID, flow.bridge)
+    wait_closeout(flow.state)
+    assert 'a motorcyclist' in flow.state.fact('description')
+    assert flow.state.review_prefix == ''
+

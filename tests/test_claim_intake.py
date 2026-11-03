@@ -289,7 +289,7 @@ def test_existing_facts_omit_fields_but_keep_correction_fields(api):
     fields = {field.key: field for field in bridge.tasks[-1][2]}
     assert 'location' not in fields
     assert {'corrected_field', 'corrected_value'} <= fields.keys()
-    assert all(not fields[key].required for key in ('occurred_at', 'description', 'loss_type', 'corrected_field', 'corrected_value'))
+    assert all(not fields[key].required for key in ('occurred_at', 'description', 'corrected_field', 'corrected_value'))
 
 
 def test_all_facts_present_has_no_fields_and_advances(api):

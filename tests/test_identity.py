@@ -102,13 +102,12 @@ def test_fetch_outage_announces_once(flow):
     assert flow.state.verified_profile is None
 
 
-@pytest.mark.parametrize('time,expected', [('2026-01-01T12:00:00', '2026-01-01T12:00:00'), ('last week', None)])
-def test_volunteered_facts_survive_empty_retry(flow, time, expected):
-    flow.call.update(request_type=coordinator.REPORT_OWN_LOSS, stated_time=time)
+def test_volunteered_facts_survive_empty_retry(flow):
+    flow.call.update(request_type=coordinator.REPORT_OWN_LOSS)
     complete(flow, identity.TASK_ID)
     for key in ('request_type', 'description', 'location'):
         assert flow.state.fact(key) == flow.call[key]
-    assert flow.state.fact('occurred_at') == expected
+    assert flow.state.fact('occurred_at') is None
     assert flow.state.identity_retries == 0
     assert flow.state.verified_profile is None
     confirm(flow, 'no')

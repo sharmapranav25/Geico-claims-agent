@@ -52,7 +52,9 @@ def test_collection_includes_date_context_iso_and_own_words(monkeypatch):
     monkeypatch.setattr(speech, 'date_context', lambda: context)
     bridge = FakeBridge()
     claim_intake.start({}, bridge, CallState('test', verified_profile=PROFILE))
-    for fields, time_key in [(identity.identity_fields(), 'stated_time'),
-                             (bridge.tasks[-1][2], 'occurred_at')]:
+    assert 'stated_time' not in {field.key for field in identity.identity_fields()}
+    occurred_at = next(field.description for field in bridge.tasks[-1][2] if field.key == 'occurred_at')
+    assert context in occurred_at and 'ISO 8601' in occurred_at
+    for fields in (identity.identity_fields(), bridge.tasks[-1][2]):
         descriptions = {field.key: field.description for field in fields}
         assert "Record what happened in the caller's own words, for example 'my mother', not 'the caller's mother'." in descriptions['description']
