@@ -34,11 +34,9 @@ def start(call, bridge, state, say=()):
     bridge.add_info(call, 'recorded_facts', {key: value for key, value in facts.items() if value})
     skip = ' Ask for this. Skip it only if the caller says they cannot provide it.'
     fields = [
-        FieldDefinition('vehicle', 'The vehicle involved must match a choice exactly, including the year, make and model. Never assume. '
-                        'If the caller names anything different, tell them right away what this policy shows and ask which they mean, before asking anything else. '
-                        f"Record '{NOT_ON_POLICY}' if they confirm it is none of them.",
-                        question=f'I see your {labels[0]} on this policy. Was that the vehicle involved?' if len(labels) == 1 else 'Which vehicle was involved?',
-                        field_type='multiple_choice', choices=(*labels, NOT_ON_POLICY)),
+        FieldDefinition('vehicle', 'The year, make and model of the vehicle involved, as text, as soon as the caller names or confirms it. Record it once and do not ask again. '
+                        f"If they confirm it is none of the vehicles on this policy, record '{NOT_ON_POLICY}'. The application checks it against the policy.",
+                        question=f'I see your {labels[0]} on this policy. Was that the vehicle involved?' if len(labels) == 1 else f"Which vehicle was involved: {' or '.join(labels)}?"),
         FieldDefinition('occurred_at', f'The date and time the loss happened. {speech.date_context()} '
                         'If the caller gives only a time or only a day, ask for the missing part. Never assume a date. '
                         "If they say today, yesterday, tomorrow, hours ago or anything else relative, do not work it out; "
@@ -88,6 +86,16 @@ def capture_details(call, state, bridge):
         state.set_fact('description', previous + '. ' + value.strip().lstrip('.!? '))
 
 
+def _vehicle_labels(state):
+    return tuple(vehicle_label(vehicle) for vehicle in state.verified_profile.vehicles) if state.verified_profile else ()
+
+
+def _fact_value(state, key, value):
+    if key != 'vehicle':
+        return value
+    return verification.match_vehicle(value, _vehicle_labels(state))
+
+
 def capture_live(call, state, bridge):
     from .. import supervisor
     from . import identity
@@ -100,9 +108,10 @@ def capture_live(call, state, bridge):
         if value == state.live_seen.get(key) or value is None or not str(value).strip():
             continue
         state.live_seen[key] = value
-        if value == NOT_ON_POLICY:
-            continue
         if key == 'occurred_at' and verification.validate_occurred_at(value) is not True:
+            continue
+        value = _fact_value(state, key, value)
+        if value is None:
             continue
         state.set_fact(key, value)
         supervisor.on_fact_changed(call, state, bridge)
@@ -111,10 +120,12 @@ def capture_live(call, state, bridge):
 def capture(call, state, bridge):
     for key in CLAIM_FIELDS:
         value = bridge.get_field(call, key)
-        if value is not None and str(value).strip() and value != NOT_ON_POLICY:
+        value = _fact_value(state, key, value) if value is not None and str(value).strip() else None
+        if value is not None:
             state.set_fact(key, value)
     field, value = bridge.get_field(call, 'corrected_field'), bridge.get_field(call, 'corrected_value')
     labels = tuple(vehicle_label(vehicle) for vehicle in state.verified_profile.vehicles) if state.verified_profile else ()
+    value = (_fact_value(state, field, value) or value) if value else value
     if field and value and verification.correction_is_valid(field, value, labels, LOSS_TYPES):
         state.loss_type_corrected = state.loss_type_corrected or field == 'loss_type'
         state.set_fact(field, value)
@@ -130,6 +141,7 @@ def apply_correction(state, field, value):
 
     state.corrections += 1
     labels = tuple(vehicle_label(vehicle) for vehicle in state.verified_profile.vehicles)
+    value = (_fact_value(state, field, value) or value) if value else value
     if field == 'occurred_at' and verification.is_relative_time(_last_caller_line(state)):
         logger.info('Claim correction rejected')
         state.clear_results('start_review')
@@ -269,4 +281,13 @@ def register(agent, bridge: CallBridge):
             return False, f"Do not record that. Say exactly: '{verification.EXACT_TIME_LINE}'"
         return verification.validate_occurred_at(value)
 
+    def on_validate_vehicle(call, value):
+        from ..coordinator import state_for
+
+        labels = _vehicle_labels(state_for(call, bridge))
+        if value == NOT_ON_POLICY or not labels or verification.match_vehicle(value, labels):
+            return True
+        return False, f"That does not match this policy, which shows {' and '.join(labels)}. Tell the caller what the policy shows and ask which they mean."
+
     bridge.register_validator(agent, 'occurred_at', on_validate_occurred_at)
+    bridge.register_validator(agent, 'vehicle', on_validate_vehicle)

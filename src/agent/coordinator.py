@@ -42,9 +42,9 @@ KEEP_CONTEXT_RULE = (
 # Descriptions help the classifier distinguish whose loss is being reported.
 INTENT_CHOICES = {
     "intent_a": (
-        "A loss reported under the policy covering the person or vehicle concerned. "
-        "The caller may be the policyholder or reporting on their behalf. Another "
-        "driver's involvement does not by itself make this Intent A or B."
+        "A loss the policyholder is reporting on their own policy. A caller reporting "
+        "for someone else is not this. Another driver's involvement does not by itself "
+        "make this Intent A or B."
     ),
     "intent_b": (
         "Damage allegedly caused by a GEICO-insured person or vehicle, reported by "
