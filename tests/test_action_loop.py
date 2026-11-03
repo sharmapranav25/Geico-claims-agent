@@ -299,7 +299,7 @@ def test_claim_save_records_result_before_announcement(api, call, error, task):
     on_unavailable.side_effect = announce
     advance(state, lambda current: claim_intake.next_action(call, current, bridge, on_unavailable))
     announcement = 'start_review' if error is None else 'announce_save'
-    assert list(state.results) == ['write_summary', 'final_consistency', 'save_draft', announcement]
+    assert list(state.results) == ['check_details', 'write_summary', 'final_consistency', 'save_draft', announcement]
     assert state.result(announcement).target == 'guava'
     if isinstance(error, api_adapter.APIUnavailableError):
         on_unavailable.assert_called_once_with(call)

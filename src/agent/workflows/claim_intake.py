@@ -9,7 +9,8 @@ from ..bridge import CallBridge, FieldDefinition
 
 logger = logging.getLogger(__name__)
 TASK_ID = 'collect-claim'
-TASK_IDS = (TASK_ID,)
+DETAILS_TASK_ID = 'incident-details'
+TASK_IDS = (TASK_ID, DETAILS_TASK_ID)
 CLAIM_FIELDS = ('vehicle', 'occurred_at', 'location', 'description', 'loss_type')
 LOSS_TYPES = ('collision', 'theft', 'weather', 'other')
 REQUIRED_FACTS = ('vehicle', 'occurred_at', 'location', 'description')
@@ -48,11 +49,6 @@ def start(call, bridge, state, say=()):
                         question='What happened?', required=False),
     ]
     fields = [field for field in fields if not facts[field.key]]
-    keep_description = bool(fields and facts['description'])
-    if keep_description:
-        fields.append(FieldDefinition('description',
-            "The caller already described this. Update it only if they add details, combining old and new in the caller's own words. Never ask for it from scratch.",
-            required=False))
     if fields:
         correction = ' Record this only if the caller changes something they already gave. Never ask for it.'
         fields += [FieldDefinition('corrected_field', 'The detail changed.' + correction,
@@ -173,6 +169,15 @@ def next_action(call, state, bridge, on_unavailable):
     if missing:
         return Action('announce_missing', 'guava', lambda: _announce_missing(call, bridge, state, missing))
     from .. import supervisor
+    if state.result('check_details') is None:
+        return Action('check_details', 'guava', lambda: supervisor.start_details_check(call, state, bridge))
+    if not state.details_ready:
+        return None
+    if state.details_question:
+        if state.result('ask_details') is None:
+            return Action('ask_details', 'guava', lambda: _ask_details(call, bridge, state))
+        if not state.done(DETAILS_TASK_ID):
+            return None
     if state.result('write_summary') is None:
         return Action('write_summary', 'guava', lambda: supervisor.start_summary(call, state, bridge))
     if not state.summary_ready:

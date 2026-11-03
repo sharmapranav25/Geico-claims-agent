@@ -140,7 +140,7 @@ def test_extra_check_runs_after_verification_in_registered_flow(flow, monkeypatc
     sequence = selected(caplog)
     position = sequence.index(('5a', 'extra_situation'))
     assert sequence[position - 1] == ('3', 'start_request')
-    assert sequence[position + 1] == ('6', 'write_summary')
+    assert sequence[position + 1] == ('6', 'check_details')
     assert flow.bridge.instructions == ['Extra situation.']
     assert flow.state.result('extra_situation').ok
     assert flow.bridge.tasks[-1].task_id == 'hang-up'
@@ -151,7 +151,7 @@ def test_happy_path_check_action_sequence(flow, caplog):
         happy_path(flow)
     assert selected(caplog) == [
         ('1', 'safety_question'), ('5', 'check_api'), ('5', 'start_verification'), ('5', 'start_confirm'), ('5', 'fetch_policy'),
-        ('5', 'announce_verification'), ('3', 'start_request'), ('6', 'write_summary'), ('6', 'final_consistency'), ('6', 'save_draft'),
+        ('5', 'announce_verification'), ('3', 'start_request'), ('6', 'check_details'), ('6', 'write_summary'), ('6', 'final_consistency'), ('6', 'save_draft'),
         ('6', 'start_review'), ('8', 'submit_claim'), ('9', 'announce_submission'), ('ending', 'hang_up'),
     ]
 

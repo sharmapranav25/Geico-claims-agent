@@ -203,7 +203,7 @@ def _raise_conflict(state, answer):
     return True
 
 
-def on_fact_changed(call, state, bridge, key):
+def on_fact_changed(call, state, bridge):
     from . import coordinator
 
     facts = claim_intake.claim_facts(state)
@@ -221,16 +221,15 @@ def on_fact_changed(call, state, bridge, key):
             coordinator.run_checklist(call, state, bridge)
 
     _start_worker(check_live)
-    if key == 'description' and state.open_task == claim_intake.TASK_ID:
-        check_description(call, state, bridge)
 
 
-def check_description(call, state, bridge):
+def start_details_check(call, state, bridge):
     from . import coordinator
 
     description = state.fact('description')
 
-    def check_details():
+    def work():
+        # Wait for the action to be recorded before generating or resuming the checklist.
         with state.lock:
             if _inactive(state):
                 return
@@ -238,16 +237,43 @@ def check_description(call, state, bridge):
         with state.lock:
             if _inactive(state):
                 return
-            for point, label in POINT_QUESTIONS.items():
-                if point == 'other_party_actions' and not answer['other_party_involved']:
-                    continue
-                if not answer[point] and point not in state.raised:
-                    state.raised.add(point)
-                    logger.info('Supervisor missing point %s', point)
-                    state.pending_nudges.append(f'Ask naturally about {label}. Ask only once; if the caller does not know, move on.')
+            state.details_question = _details_question(answer)
+            state.details_ready = True
             coordinator.run_checklist(call, state, bridge)
 
-    _start_worker(check_details)
+    _start_worker(work)
+
+
+def _details_question(answer):
+    if answer is None:
+        return None
+    points = [label for point, label in POINT_QUESTIONS.items()
+              if not answer[point] and (point != 'other_party_actions' or answer['other_party_involved'])]
+    if not points:
+        return None
+    logger.info('Supervisor missing points %s', len(points))
+    listed = ', '.join(points[:-1]) + ' and ' + points[-1] if len(points) > 1 else points[0]
+    return f'Can you tell me a bit more about {listed}?'
+
+
+def settle_review(call, state, bridge):
+    # Fields arrive one at a time, so wait for the whole change before applying it.
+    from . import coordinator
+    from .workflows import review_claim
+
+    if 'review' in state.speech_timers:
+        return
+
+    def settled():
+        with state.lock:
+            state.speech_timers.pop('review', None)
+            if not state.ended and review_claim.apply_pending(call, state, bridge):
+                coordinator.run_checklist(call, state, bridge)
+
+    timer = threading.Timer(SETTLE_SECONDS, settled)
+    timer.daemon = True
+    state.speech_timers['review'] = timer
+    timer.start()
 
 
 def _start_closeout(call, state, bridge, summary):
@@ -276,10 +302,7 @@ def _start_closeout(call, state, bridge, summary):
                 if _raise_conflict(state, answer):
                     fields = sorted(set(answer['fields']))
                     labels = ' and '.join(FIELD_LABELS[key] for key in fields)
-                    if len(fields) == 1:
-                        state.review_prefix = f"One thing to check: {labels} doesn't seem right. Is that correct? "
-                    else:
-                        state.review_prefix = f"One thing to check: {labels} don't seem to match. Which is right? "
+                    state.review_prefix = f"One thing to check: {labels} don't seem to match. Which is right? "
                 state.consistency_ready = True
             coordinator.run_checklist(call, state, bridge)
 

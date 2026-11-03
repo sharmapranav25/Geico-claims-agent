@@ -309,28 +309,12 @@ def test_live_conflict_dedupes_fields_and_never_logs_reason(flow, caplog):
         for fields in (['description', 'location'], ['location', 'description']):
             answer['fields'] = fields
             flow.bridge.generate.return_value = json.dumps(answer)
-            supervisor.on_fact_changed(flow.call, flow.state, flow.bridge, 'location')
+            supervisor.on_fact_changed(flow.call, flow.state, flow.bridge)
             join_workers(flow)
     assert flow.state.nudge_count == 1
     assert 'private caller details' in flow.bridge.instructions[0]
     assert 'private caller details' not in caplog.text
-    assert ('description', 'location') in flow.state.raised
-
-
-@pytest.mark.parametrize('involved,expected', [(False, 3), (True, 4)])
-def test_description_nudges_once_and_other_actions_only_if_involved(flow, involved, expected):
-    flow.state.open_task = claim_intake.TASK_ID
-    def generate(prompt, json_schema):
-        if json_schema == supervisor.DESCRIPTION_SCHEMA:
-            return json.dumps({key: involved if key == 'other_party_involved' else False for key in json_schema['properties']})
-        return safe_generate(prompt, json_schema)
-    flow.bridge.generate = generate
-    for _ in range(2):
-        supervisor.on_fact_changed(flow.call, flow.state, flow.bridge, 'description')
-        join_workers(flow)
-    assert flow.state.nudge_count == expected
-    assert ('other_party_actions' in flow.state.raised) is involved
-    assert not flow.state.claim_blocked
+    assert any(item[0] == ('description', 'location') for item in flow.state.raised)
 
 
 def test_closeout_order_summary_final_check_then_save(flow):
@@ -344,7 +328,7 @@ def test_closeout_order_summary_final_check_then_save(flow):
     flow.bridge.generate = generate
     coordinator.run_checklist(flow.call, flow.state, flow.bridge)
     wait_closeout(flow.state)
-    assert schemas == [supervisor.SUMMARY_SCHEMA, supervisor.FACTS_SCHEMA]
+    assert schemas == [supervisor.DESCRIPTION_SCHEMA, supervisor.SUMMARY_SCHEMA, supervisor.FACTS_SCHEMA]
     assert list(flow.state.results)[-4:] == ['write_summary', 'final_consistency', 'save_draft', 'start_review']
     assert flow.state.fact('incident_summary') == 'Rear-ended at a light.'
     assert 'incident_summary' not in claim_intake.CLAIM_FIELDS
@@ -468,7 +452,7 @@ def test_live_checks_generate_without_holding_call_lock(flow):
         return safe_generate(prompt, json_schema)
     flow.bridge.generate = generate
     with flow.state.lock:
-        supervisor.on_fact_changed(flow.call, flow.state, flow.bridge, 'description')
+        supervisor.on_fact_changed(flow.call, flow.state, flow.bridge)
     join_workers(flow)
     assert acquired == [True]
 
@@ -502,75 +486,7 @@ def test_sdk_generate_is_only_a_pass_through(adapter, monkeypatch):
     generate.assert_called_once_with('prompt', json_schema=schema)
 
 
-def test_identity_description_waits_for_collection_and_additions_capture_live(flow):
-    schemas = []
-    def generate(prompt, json_schema):
-        schemas.append(json_schema)
-        if json_schema == supervisor.DESCRIPTION_SCHEMA:
-            return json.dumps({key: key != 'owner_role' for key in json_schema['properties']})
-        return safe_generate(prompt, json_schema)
-    flow.bridge.generate = generate
-    identity.start(flow.call, flow.bridge, flow.state)
-    flow.call['description'] = 'A car hit my parked car.'
-    with flow.state.lock:
-        claim_intake.capture_live(flow.call, flow.state, flow.bridge)
-    join_workers(flow)
-    assert flow.state.fact('description') == flow.call['description']
-    assert schemas == [supervisor.FACTS_SCHEMA]
-    assert flow.bridge.instructions == []
-
-    flow.state.verified_profile = PROFILE
-    with flow.state.lock:
-        claim_intake.start(flow.call, flow.bridge, flow.state)
-    join_workers(flow)
-    assert schemas.count(supervisor.DESCRIPTION_SCHEMA) == 1
-    assert len(flow.bridge.instructions) == 1
-    task = flow.bridge.tasks[-1]
-    field = next(field for field in task.fields if field.key == 'description')
-    assert field.required is False and field.question == ''
-    assert field.description == (
-        "The caller already described this. Update it only if they add details, combining old and new in the caller's own words. Never ask for it from scratch."
-    )
-    flow.call['description'] += ' I was away from the vehicle.'
-    with flow.state.lock:
-        claim_intake.capture_live(flow.call, flow.state, flow.bridge)
-    join_workers(flow)
-    assert flow.state.fact('description') == 'A car hit my parked car. I was away from the vehicle.'
-    assert schemas.count(supervisor.DESCRIPTION_SCHEMA) == 2
-    assert len(flow.bridge.instructions) == 1
-
-
-def test_complete_collection_does_not_keep_description_or_start_nudge(flow, monkeypatch):
-    collect(flow)
-    check = Mock()
-    monkeypatch.setattr(supervisor, 'check_description', check)
-    claim_intake.start(flow.call, flow.bridge, flow.state)
-    assert flow.bridge.tasks[-1].fields == []
-    assert flow.state.live_keys == ()
-    check.assert_not_called()
-
-
-def test_descriptive_answer_after_collection_closes_is_dropped(flow):
-    entered, release = threading.Event(), threading.Event()
-    flow.state.open_task = claim_intake.TASK_ID
-    flow.state.set_fact('description', 'An incident.')
-    def generate(prompt, json_schema):
-        entered.set()
-        release.wait(1)
-        return json.dumps({key: False for key in json_schema['properties']})
-    flow.bridge.generate = generate
-    supervisor.check_description(flow.call, flow.state, flow.bridge)
-    assert entered.wait(1)
-    with flow.state.lock:
-        flow.state.open_task = review_claim.REVIEW_TASK_ID
-    release.set()
-    join_workers(flow)
-    assert flow.state.raised == set()
-    assert flow.state.pending_nudges == []
-    assert flow.bridge.instructions == []
-
-
-def test_final_single_field_conflict_uses_singular_wording(flow):
+def test_conflict_on_a_single_fact_is_ignored(flow):
     collect(flow)
     def generate(prompt, json_schema):
         if json_schema == supervisor.FACTS_SCHEMA:

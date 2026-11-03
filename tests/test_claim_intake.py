@@ -110,7 +110,16 @@ def test_single_vehicle_is_confirmed_with_the_caller(api):
     bridge.completions[claim_intake.TASK_ID](call)
     assert api.update_claim_draft.call_args.args[1].vehicle_id == 'V01-1'
     assert '2021 Toyota Camry' in bridge.say[-1][0]
-    assert bridge.state.result('start_review').data['vehicle'] == '2021 Toyota Camry'
+
+
+def test_vehicle_not_on_the_policy_is_never_filed(api):
+    bridge = registered()
+    call = dict(FIELDS, vehicle=claim_intake.NOT_ON_POLICY)
+    bridge.completions[claim_intake.TASK_ID](call)
+    assert bridge.state.fact('vehicle') is None
+    assert bridge.tasks[-1][0] == 'claim-missing-details'
+    api.update_claim_draft.assert_not_called()
+    api.submit_claim_draft.assert_not_called()
 
 
 def test_collection_and_review_completion_criteria(api):
@@ -334,7 +343,7 @@ def test_review_changes_and_additions(api, decision, value, valid):
     bridge.completions[review_claim.REVIEW_TASK_ID](call)
     assert bridge.state.corrections == 1
     assert api.update_claim_draft.call_count == (2 if valid else 1)
-    assert bridge.tasks[-1][0] == review_claim.REVIEW_TASK_ID
+    assert bridge.tasks[-1][0] == review_claim.REVIEW_TASK_ID + '-1'
     if valid:
         assert bridge.state.approved_fields is None
         expected = value if decision == 'change' else original.rstrip('. ') + '. ' + value

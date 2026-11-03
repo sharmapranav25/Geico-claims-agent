@@ -31,6 +31,12 @@ class CallState:
     closeout_generation: int = 0
     summary_ready: bool = False
     consistency_ready: bool = False
+    loss_type_corrected: bool = False
+    details_ready: bool = False
+    details_question: str | None = None
+    review_seen: tuple = (None, None)
+    review_decision_seen: str | None = None
+    review_line_start: int = 0
     speech_timers: dict = field(default_factory=dict, repr=False)
     classified_lines: set = field(default_factory=set, repr=False)
     results: dict[str, ActionResult] = field(default_factory=dict)

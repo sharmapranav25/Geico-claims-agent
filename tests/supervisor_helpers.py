@@ -26,8 +26,8 @@ def after_safety(state):
 
 
 def closeout_done(state):
-    state.summary_ready = state.consistency_ready = True
-    for name in ('write_summary', 'final_consistency'):
+    state.details_ready = state.summary_ready = state.consistency_ready = True
+    for name in ('check_details', 'write_summary', 'final_consistency'):
         state.record(ActionResult(name, 'guava', True))
 
 
@@ -35,7 +35,8 @@ def wait_closeout(state):
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
         with state.lock:
-            pending = (state.result('write_summary') is not None and not state.summary_ready
+            pending = (state.result('check_details') is not None and not state.details_ready
+                       or state.result('write_summary') is not None and not state.summary_ready
                        or state.result('final_consistency') is not None and not state.consistency_ready)
             if not pending or state.ended or state.stopped or state.claim_blocked:
                 return

@@ -55,8 +55,9 @@ def start(call, bridge, state=None):
 
     bridge.set_task(call, TASK_ID, fields=identity_fields(ask_request=True),
         completion_criteria='Complete as soon as the policy number, name and phone are recorded. Do not read them back or re-confirm them.',
-        objective="Do not greet the caller again. Collect the policy number, name and phone using each field's question wording exactly. "
-        "If the caller already gave one, record it and skip that question. Ask only the three identity questions. "
+        objective="Do not greet the caller again. First ask how you can help, unless the caller already said. Then warmly say you can help with that and "
+        "you just need a few details, and collect the policy number, name and phone using each field's question wording exactly. "
+        "If the caller already gave one, record it and skip that question. Ask only these questions. "
         "Do not ask about the loss or discuss it until the application tells you to. Say nothing about what the policy contains. "
         "Never use the phrase 'against the policy'. This demo supports the policyholder only. "
         "If the caller lacks their policy number, explain this demo cannot look it up without it. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)

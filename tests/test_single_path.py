@@ -333,7 +333,7 @@ def test_new_branches_through_registered_handlers(monkeypatch, callback_path, br
     if branch in ('change', 'add'):
         call.update(submission_decision=branch, corrected_field='location', corrected_value='New detail')
         finish(review_claim.REVIEW_TASK_ID)
-        expected += ['review-claim']
+        expected += ['review-claim-1']
         assert state.corrections == 1
         call['submission_decision'] = 'approve'
     if branch.startswith('timeout'):

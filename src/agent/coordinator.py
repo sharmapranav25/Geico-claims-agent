@@ -19,6 +19,7 @@ DEFAULT_PURPOSE = (
 REQUEST_TASK_ID = "confirm-request"
 COMPLETION_TASKS = tuple(dict.fromkeys((*safety.TASK_IDS, REQUEST_TASK_ID, *identity.TASK_IDS, *claim_intake.TASK_IDS, *review_claim.TASK_IDS, *submit_claim.TASK_IDS, *assistance.TASK_IDS, *endings.TASK_IDS)))
 CAPTURES = {identity.TASK_ID: identity.capture, claim_intake.TASK_ID: claim_intake.capture,
+            claim_intake.DETAILS_TASK_ID: claim_intake.capture_details,
             review_claim.REVIEW_TASK_ID: review_claim.capture}
 REPORT_OWN_LOSS = "report_own_loss"
 OTHER_REQUEST = "other_request"
@@ -105,6 +106,8 @@ def on_speech(call, role, text, utterance_id, bridge):
         if role == 'caller':
             supervisor.settle(call, state, bridge, text, utterance_id)
         claim_intake.capture_live(call, state, bridge)
+        if review_claim.change_pending(call, state, bridge):
+            supervisor.settle_review(call, state, bridge)
 
 
 def start_call(call, bridge: CallBridge):
@@ -113,6 +116,7 @@ def start_call(call, bridge: CallBridge):
 
 def on_task_complete(call, task_id, bridge, get_state=None, routes=None):
     state = get_state(call) if get_state is not None else state_for(call, bridge)
+    task_id = review_claim.REVIEW_TASK_ID if task_id in review_claim.TASK_IDS else task_id
     with state.lock:
         if state.ended or state.stopped:
             return
