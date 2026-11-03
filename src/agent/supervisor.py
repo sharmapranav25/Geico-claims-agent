@@ -139,6 +139,7 @@ def settle(call, state, bridge, text, utterance_id):
     previous = state.speech_timers.get(key)
     if previous is not None:
         previous.cancel()
+    state.pending_lines.add(key)
     agent_line = next((line[1] for line in reversed(state.lines) if line[0] == 'agent'), '')
 
     def settled():
@@ -148,6 +149,8 @@ def settle(call, state, bridge, text, utterance_id):
             state.speech_timers.pop(key)
             pair = (key, text)
             if pair in state.classified_lines:
+                state.pending_lines.discard(key)
+                coordinator.run_checklist(call, state, bridge)
                 return
             state.classified_lines.add(pair)
         _start_worker(lambda: _classify(call, state, bridge, agent_line, text, utterance_id, key))
@@ -169,7 +172,9 @@ def _classify(call, state, bridge, agent_line, text, utterance_id, key):
 
     answer = ask(bridge, LINE_PROMPT + json.dumps({'agent': agent_line, 'caller': text}), LINE_SCHEMA, check_line)
     with state.lock:
-        if answer is None or state.ended or state.stopped:
+        if key not in state.speech_timers:
+            state.pending_lines.discard(key)
+        if state.ended or state.stopped:
             return
         if answer is None or (utterance_id is not None and not any(line[1:] == (text, utterance_id) for line in state.lines)):
             # A failed or outdated check must not hold the call.

@@ -109,7 +109,7 @@ def check_verification(call, state, bridge, routes):
     if state.verified_profile is not None:
         return PASS
     if not state.done(identity.TASK_ID):
-        return None if (state.completed_tasks - {safety.TASK_ID}) or state.result('identity_retry') is not None else next_start_action(call, state, bridge)
+        return None if (state.completed_tasks - {safety.TASK_ID, identity.HELP_TASK_ID}) or state.result('identity_retry') is not None else next_start_action(call, state, bridge)
     return identity.next_action(call, state, bridge, routes.on_verified, routes.on_unavailable)
 
 

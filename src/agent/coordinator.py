@@ -19,7 +19,7 @@ DEFAULT_PURPOSE = (
 )
 REQUEST_TASK_ID = "confirm-request"
 COMPLETION_TASKS = tuple(dict.fromkeys((*safety.TASK_IDS, REQUEST_TASK_ID, *identity.TASK_IDS, *claim_intake.TASK_IDS, *review_claim.TASK_IDS, *submit_claim.TASK_IDS, *assistance.TASK_IDS, *endings.TASK_IDS)))
-CAPTURES = {identity.TASK_ID: identity.capture, claim_intake.TASK_ID: claim_intake.capture,
+CAPTURES = {identity.HELP_TASK_ID: identity.capture_help, identity.TASK_ID: identity.capture, claim_intake.TASK_ID: claim_intake.capture,
             claim_intake.DETAILS_TASK_ID: claim_intake.capture_details,
             review_claim.REVIEW_TASK_ID: review_claim.capture}
 REPORT_OWN_LOSS = "report_own_loss"
@@ -83,6 +83,11 @@ def next_start_action(call, state, bridge):
     if state.result('start_verification') is not None or state.result('start_assistance') is not None:
         return None
     if check.ok:
+        if state.result('ask_how_to_help') is None:
+            return Action('ask_how_to_help', 'guava', lambda: identity.ask_how_to_help(call, bridge))
+        # Hold the identity questions until the supervisor has read the caller's answer.
+        if not state.done(identity.HELP_TASK_ID) or state.pending_lines:
+            return None
         return Action('start_verification', 'guava', lambda: identity.start(call, bridge, state))
     return Action('start_assistance', 'guava', lambda: assistance.start(call, bridge))
 

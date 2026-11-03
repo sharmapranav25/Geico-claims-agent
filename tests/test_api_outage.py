@@ -129,7 +129,7 @@ def test_down_start_uses_say_and_never_verifies(adapter, unavailable_api, callba
     after_safety(coordinator.state_for(call, adapter.SDK_BRIDGE))
     coordinator.start_call(call, adapter.SDK_BRIDGE)
     state = coordinator.state_for(call, adapter.SDK_BRIDGE)
-    assert list(state.results) == ['check_api', 'start_assistance']
+    assert list(state.results) == ['ask_how_to_help', 'check_api', 'start_assistance']
     assert state.result('check_api').ok is False
     command, = call._command_queue
     assert command.task_id == assistance.OFFER_TASK_ID

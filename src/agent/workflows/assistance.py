@@ -96,8 +96,9 @@ def _collect_callback(call, bridge):
                    + KEEP_CONTEXT_RULE + CALL_ENDING_RULE),
         fields=[
             FieldDefinition('callback_time', f'When the caller wants the callback. Today in Pacific time is {today}. '
-                            'Record it as ISO 8601 with no offset, like 2026-11-03T10:00:00.'),
-            FieldDefinition('callback_phone', 'The phone number to call back.'),
+                            'Record it as ISO 8601 with no offset, like 2026-11-03T10:00:00.',
+                            question='What day and time works best for your callback? We call on weekdays between 9 AM and 4 PM Pacific.'),
+            FieldDefinition('callback_phone', 'The phone number to call back.', question='What number should we call you on?'),
         ],
     )
 

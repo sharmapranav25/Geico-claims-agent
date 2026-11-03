@@ -116,12 +116,3 @@ def test_volunteered_facts_survive_empty_retry(flow):
         flow.call[key] = None
     complete(flow, identity.TASK_ID)
     assert flow.state.facts_dict() == prior
-
-
-def test_call_asks_how_to_help_before_identity_but_not_on_retry():
-    keys = [field.key for field in identity.identity_fields(ask_request=True)]
-    assert keys[:2] == ['request_type', 'policy_number'] and keys.count('request_type') == 1
-    first = identity.identity_fields(ask_request=True)[0]
-    assert first.question == identity.HELP_QUESTION and not first.required
-    assert [field.key for field in identity.identity_fields()][0] == 'policy_number'
-

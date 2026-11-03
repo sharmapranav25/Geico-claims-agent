@@ -95,6 +95,10 @@ def test_safety_precedes_api_and_exact_question(flow):
     flow.call['safety_answer'] = 'safe'
     coordinator.on_task_complete(flow.call, safety.TASK_ID, flow.bridge)
     flow.client.list_policies.assert_called_once()
+    assert flow.bridge.tasks[-1].task_id == identity.HELP_TASK_ID
+    assert flow.bridge.tasks[-1].fields[0].question == identity.HELP_QUESTION
+    flow.call['request_type'] = coordinator.REPORT_OWN_LOSS
+    coordinator.on_task_complete(flow.call, identity.HELP_TASK_ID, flow.bridge)
     assert flow.bridge.tasks[-1].task_id == identity.TASK_ID
     assert 'Do not greet' in flow.bridge.tasks[-1].objective
 
@@ -735,4 +739,90 @@ def test_approval_with_a_new_value_but_no_new_field_counts_as_an_addition(flow):
     wait_closeout(flow.state)
     assert 'a motorcyclist' in flow.state.fact('description')
     assert flow.state.review_prefix == ''
+
+
+def test_slow_action_answer_cannot_restart_a_blocked_claim(flow):
+    assert coordinator.on_intent_a(flow.call, flow.bridge) == coordinator.CONTINUE_TASK
+    classify(flow, "I'm calling on behalf of my mother", {'role': 'someone_else'})
+    flow.bridge.read_script.assert_called_once_with(flow.call, checklist.ROLE_LINE)
+    assert flow.bridge.tasks[-1].task_id == assistance.CALLBACK_OFFER_TASK_ID
+    before = len(flow.bridge.tasks)
+    for handler in (coordinator.on_intent_a, coordinator.on_intent_b, coordinator.on_immediate_danger_or_other):
+        assert 'Stop collecting' in handler(flow.call, flow.bridge)
+    assert len(flow.bridge.tasks) == before and flow.bridge.instructions == []
+    assert 'reporting on their behalf' not in coordinator.INTENT_CHOICES['intent_a']
+
+
+def test_asking_for_a_human_gets_the_limit_and_only_a_callback(flow):
+    classify(flow, 'I want to talk to a human', {'wants_human': True})
+    flow.bridge.read_script.assert_called_once_with(flow.call, checklist.HUMAN_LINE)
+    assert flow.state.claim_blocked
+    assert flow.bridge.tasks[-1].task_id == assistance.CALLBACK_OFFER_TASK_ID
+    assert 'connect' not in checklist.HUMAN_LINE.lower()
+    assert 'Stop collecting' in coordinator.on_intent_a(flow.call, flow.bridge)
+
+
+def test_asking_for_a_human_after_filing_changes_nothing(flow):
+    flow.state.record(ActionResult('submit_claim', 'api', True, SimpleNamespace(claim_number='claim')))
+    classify(flow, 'Can I talk to a person', {'wants_human': True})
+    assert not flow.state.claim_blocked
+    flow.bridge.read_script.assert_not_called()
+
+
+def at_help_question(flow):
+    flow.state.results.clear()
+    flow.state.clear_done(identity.HELP_TASK_ID)
+    flow.state.record(ActionResult('check_api', 'api', True))
+    coordinator.run_checklist(flow.call, flow.state, flow.bridge)
+    assert flow.bridge.tasks[-1].task_id == identity.HELP_TASK_ID
+
+
+def test_identity_questions_wait_for_the_classifier(flow):
+    at_help_question(flow)
+    release = threading.Event()
+    def generate(prompt, json_schema):
+        release.wait(1)
+        return json.dumps(SAFE)
+    flow.bridge.generate = generate
+    coordinator.on_speech(flow.call, 'caller', 'I want to open a claim', 'help', flow.bridge)
+    coordinator.on_task_complete(flow.call, identity.HELP_TASK_ID, flow.bridge)
+    assert flow.bridge.tasks[-1].task_id == identity.HELP_TASK_ID
+    release.set()
+    until(lambda: flow.bridge.tasks[-1].task_id == identity.TASK_ID)
+    assert flow.state.pending_lines == set()
+
+
+def test_asking_for_a_human_never_reaches_the_identity_questions(flow):
+    at_help_question(flow)
+    flow.bridge.generate = Mock(return_value=json.dumps(SAFE | {'wants_human': True}))
+    coordinator.on_speech(flow.call, 'caller', 'I want to talk to a human', 'help', flow.bridge)
+    coordinator.on_task_complete(flow.call, identity.HELP_TASK_ID, flow.bridge)
+    until(lambda: flow.state.claim_blocked)
+    join_workers(flow)
+    assert identity.TASK_ID not in [task.task_id for task in flow.bridge.tasks]
+    flow.bridge.read_script.assert_called_once_with(flow.call, checklist.HUMAN_LINE)
+
+
+def test_failed_classification_does_not_hold_the_call(flow):
+    at_help_question(flow)
+    flow.bridge.generate = Mock(side_effect=RuntimeError('offline'))
+    coordinator.on_speech(flow.call, 'caller', 'I want to open a claim', 'help', flow.bridge)
+    coordinator.on_task_complete(flow.call, identity.HELP_TASK_ID, flow.bridge)
+    until(lambda: flow.bridge.tasks[-1].task_id == identity.TASK_ID)
+
+
+@pytest.mark.parametrize('hung_up', [False, True])
+def test_asking_for_a_human_during_an_ending_still_gets_the_callback(flow, hung_up):
+    collect(flow)
+    flow.state.ending = 'missing_details'
+    if hung_up:
+        flow.state.record(ActionResult('hang_up', 'guava', True))
+    classify(flow, 'I want to talk to a human', {'wants_human': True})
+    flow.bridge.read_script.assert_called_once_with(flow.call, checklist.HUMAN_LINE)
+    assert flow.state.ending is None and flow.state.result('hang_up') is None
+    flow.call.update(wants_callback='no', ending_ack='done')
+    coordinator.on_task_complete(flow.call, assistance.CALLBACK_OFFER_TASK_ID, flow.bridge)
+    assert flow.state.ending == 'assistance_closed'
+    coordinator.on_task_complete(flow.call, 'assistance-closed', flow.bridge)
+    flow.bridge.hang_up.assert_called_once_with(flow.call, endings.FINAL_LINES['assistance_closed'])
 

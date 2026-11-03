@@ -22,6 +22,8 @@ def safe_generate(prompt, json_schema):
 
 def after_safety(state):
     state.mark_done(safety.TASK_ID)
+    state.mark_done(identity.HELP_TASK_ID)
+    state.record(ActionResult('ask_how_to_help', 'guava', True))
     return state
 
 

@@ -10,7 +10,8 @@ from . import endings, policy_lookup
 logger = logging.getLogger(__name__)
 TASK_ID = 'verify-policy'
 CONFIRM_TASK_ID = 'confirm-identity'
-TASK_IDS = (TASK_ID, CONFIRM_TASK_ID)
+HELP_TASK_ID = 'ask-how-to-help'
+TASK_IDS = (HELP_TASK_ID, TASK_ID, CONFIRM_TASK_ID)
 MAX_IDENTITY_RETRIES = 2
 POLICY_QUESTION = 'What is your policy number?'
 NAME_QUESTION = 'What is your full name?'
@@ -26,9 +27,7 @@ def identity_fields(spell_name=False):
     from ..coordinator import REPORT_OWN_LOSS, OTHER_REQUEST
 
     volunteer = ' Record this only if the caller volunteers it. Never ask for it.'
-    request = [FieldDefinition('request_type', 'What the caller wants: report_own_loss if they are reporting a loss or opening a claim, otherwise other_request.',
-                               question=HELP_QUESTION, field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST), required=False)] if ask_request else []
-    return request + [
+    return [
         FieldDefinition('policy_number', 'The policy number, digits only. Do not record letters.',
                         question=POLICY_QUESTION, field_type='digit_sequence', sensitive=True),
         FieldDefinition('caller_name', 'Have the caller spell it letter by letter, then record it as normal words, like Jessica Brown.'
@@ -41,6 +40,23 @@ def identity_fields(spell_name=False):
         FieldDefinition('description', "What happened. Record what happened in the caller's own words, for example 'my mother', not 'the caller's mother'." + volunteer, required=False),
         FieldDefinition('location', 'Where it happened.' + volunteer, required=False),
     ]
+
+
+def ask_how_to_help(call, bridge):
+    from ..coordinator import KEEP_CONTEXT_RULE, CALL_ENDING_RULE, REPORT_OWN_LOSS, OTHER_REQUEST
+
+    bridge.set_task(call, HELP_TASK_ID,
+        fields=[FieldDefinition('request_type', 'What the caller wants: report_own_loss if they are reporting a loss or opening a claim, otherwise other_request.',
+                                question=HELP_QUESTION, field_type='multiple_choice', choices=(REPORT_OWN_LOSS, OTHER_REQUEST))],
+        completion_criteria='Complete as soon as the answer is recorded.',
+        objective="Ask how you can help, unless the caller already said. Ask nothing else, do not ask for any details and do not promise anything; "
+        "the application decides what happens next. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE)
+
+
+def capture_help(call, state, bridge):
+    value = bridge.get_field(call, 'request_type')
+    if value:
+        state.set_fact('request_type', value)
 
 
 def start(call, bridge, state=None):

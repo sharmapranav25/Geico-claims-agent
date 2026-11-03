@@ -84,7 +84,7 @@ def finish(flow, *tasks):
 
 def happy_path(flow):
     coordinator.start_call(flow.call, flow.bridge)
-    finish(flow, safety.TASK_ID)
+    finish(flow, safety.TASK_ID, identity.HELP_TASK_ID)
     finish(flow, identity.TASK_ID, identity.CONFIRM_TASK_ID)
     flow.call['request_type'] = coordinator.REPORT_OWN_LOSS
     finish(flow, coordinator.REQUEST_TASK_ID, claim_intake.TASK_ID,
@@ -94,7 +94,7 @@ def happy_path(flow):
 def outage_path(flow):
     flow.client.list_policies.side_effect = api_adapter.APIUnavailableError('offline')
     coordinator.start_call(flow.call, flow.bridge)
-    finish(flow, safety.TASK_ID)
+    finish(flow, safety.TASK_ID, identity.HELP_TASK_ID)
     finish(flow, assistance.OFFER_TASK_ID, assistance.CALLBACK_OFFER_TASK_ID, assistance.CALLBACK_TASK_ID)
 
 
@@ -115,7 +115,7 @@ def test_evaluate_sends_no_commands_or_api_calls(flow):
 
 def test_completed_handler_waits_without_restarting(flow):
     coordinator.start_call(flow.call, flow.bridge)
-    finish(flow, safety.TASK_ID)
+    finish(flow, safety.TASK_ID, identity.HELP_TASK_ID)
     finish(flow, identity.TASK_ID)
     commands = (list(flow.bridge.tasks), list(flow.bridge.instructions), list(flow.bridge.infos))
     calls, results = list(flow.client.mock_calls), dict(flow.state.results)
@@ -150,7 +150,7 @@ def test_happy_path_check_action_sequence(flow, caplog):
     with caplog.at_level('INFO', logger=checklist.__name__):
         happy_path(flow)
     assert selected(caplog) == [
-        ('1', 'safety_question'), ('5', 'check_api'), ('5', 'start_verification'), ('5', 'start_confirm'), ('5', 'fetch_policy'),
+        ('1', 'safety_question'), ('5', 'check_api'), ('5', 'ask_how_to_help'), ('5', 'start_verification'), ('5', 'start_confirm'), ('5', 'fetch_policy'),
         ('5', 'announce_verification'), ('3', 'start_request'), ('6', 'check_details'), ('6', 'write_summary'), ('6', 'final_consistency'), ('6', 'save_draft'),
         ('6', 'start_review'), ('8', 'submit_claim'), ('9', 'announce_submission'), ('ending', 'hang_up'),
     ]
@@ -237,7 +237,7 @@ def test_volunteered_request_skips_start_request(flow, caplog):
     flow.call['request_type'] = coordinator.REPORT_OWN_LOSS
     with caplog.at_level('INFO', logger=checklist.__name__):
         coordinator.start_call(flow.call, flow.bridge)
-        finish(flow, safety.TASK_ID)
+        finish(flow, safety.TASK_ID, identity.HELP_TASK_ID)
         finish(flow, identity.TASK_ID, identity.CONFIRM_TASK_ID, claim_intake.TASK_ID,
                review_claim.REVIEW_TASK_ID, submit_claim.SUBMITTED_TASK_ID)
     assert ('3', 'start_request') not in selected(caplog)
@@ -248,7 +248,7 @@ def test_volunteered_request_skips_start_request(flow, caplog):
 def test_correction_repeats_save_and_review(flow, caplog):
     with caplog.at_level('INFO', logger=checklist.__name__):
         coordinator.start_call(flow.call, flow.bridge)
-        finish(flow, safety.TASK_ID)
+        finish(flow, safety.TASK_ID, identity.HELP_TASK_ID)
         finish(flow, identity.TASK_ID, identity.CONFIRM_TASK_ID)
         flow.call['request_type'] = coordinator.REPORT_OWN_LOSS
         finish(flow, coordinator.REQUEST_TASK_ID, claim_intake.TASK_ID)
