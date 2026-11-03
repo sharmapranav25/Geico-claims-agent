@@ -226,6 +226,10 @@ class APIAdapter:
     def get_policy(self, policy_number: str) -> PolicyProfile:
         return self._request("GET", self._policy_path(policy_number), PolicyProfile)
 
+    def get_claim_by_reference(self, policy_number: str, reference: str) -> SubmittedClaim:
+        return self._request('GET', self._policy_path(policy_number) + '/claims/by-reference/'
+                             + quote(reference, safe=''), SubmittedClaim)
+
     def update_claim_draft(self, policy_number: str, update: ClaimDraftUpdate) -> DraftResponse:
         if type(update) is not ClaimDraftUpdate:
             raise TypeError("update must be a ClaimDraftUpdate")

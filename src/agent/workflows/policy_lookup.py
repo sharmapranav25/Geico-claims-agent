@@ -1,26 +1,13 @@
-"""Deterministic mock policyholder verification, the first step of every call."""
+"""Policy lookup and policy-number validation."""
 
 import logging
-import re
-from difflib import SequenceMatcher
 from typing import Literal
 
 from .. import api_adapter
 from ..action_loop import Action
-from ..bridge import CallBridge, FieldDefinition
+from ..bridge import CallBridge
 
 logger = logging.getLogger(__name__)
-
-TASK_ID = "verify-policy"
-TASK_IDS = (TASK_ID,)
-# Tolerates a transcription slip in a name, not a different name.
-NAME_MATCH_THRESHOLD = 0.85
-# Required caller-provided inputs; these do not modify the policy profile.
-CHECKLIST = [
-    FieldDefinition(key="policy_number", question="What is your policy number?", description="The policy number, digits only. Do not record letters.", field_type="digit_sequence", required=True, sensitive=True),
-    FieldDefinition(key="caller_name", description="Ask the caller for their own full name, not someone else's name.", field_type="text", required=True),
-    FieldDefinition(key="caller_phone", description="Ask the caller for their own phone number on the policy.", field_type="digit_sequence", required=True, sensitive=True),
-]
 
 
 def normalize_policy_number(value: str) -> str:
@@ -39,7 +26,7 @@ def validate_policy_number(policy_number: str) -> Literal[True] | tuple[Literal[
             api.get_policy(normalize_policy_number(policy_number))
     except api_adapter.PolicyNotFoundError:
         logger.info('Policy validation not found')
-        return False, "That policy number was not found. Please ask the caller to check and repeat it."
+        return False, "I couldn't find that policy number. Ask the caller to repeat it."
     except api_adapter.APIError:
         logger.info('Policy validation unavailable')
         # An outage is not a bad number. The completion lookup fails and routes to assistance.
@@ -48,85 +35,12 @@ def validate_policy_number(policy_number: str) -> Literal[True] | tuple[Literal[
     return True
 
 
-def check_identity_match(profile, caller_name: str, caller_phone: str) -> bool:
-    # Require BOTH: all seeded policies share a phone number. Names allow case,
-    # punctuation, word order and small spelling differences; phone digits must
-    # match exactly, apart from punctuation and an optional US country code.
-    def name(value):
-        words = re.sub(r"[^\w\s]", "", value.casefold()).split() if isinstance(value, str) else []
-        return " ".join(sorted(words))
+def find_policy_action(policy_number):
+    def fetch_policy():
+        with api_adapter.APIAdapter() as api:
+            return api.get_policy(normalize_policy_number(policy_number) if isinstance(policy_number, str) else '')
 
-    def phone(value):
-        digits = re.sub(r"\D", "", value) if isinstance(value, str) else ""
-        return digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
-
-    stated_name, stated_phone = name(caller_name), phone(caller_phone)
-    if not (stated_name and stated_phone) or stated_phone != phone(profile.phone):
-        return False
-    return SequenceMatcher(None, stated_name, name(profile.name)).ratio() >= NAME_MATCH_THRESHOLD
-
-
-def start(call, bridge: CallBridge):
-    from ..coordinator import CALL_ENDING_RULE, KEEP_CONTEXT_RULE
-
-    bridge.set_task(call,
-        TASK_ID,
-        objective=(
-            "Greet the caller and collect their policy number, full name and the "
-            "phone number on the policy. They may give these before you ask or all "
-            "at once: record each one as soon as you hear it. This demo supports "
-            "the policyholder only; being a representative does not establish "
-            "authority. Do not disclose profile details or claim verification "
-            "succeeded before the application confirms it. Do not collect loss "
-            "facts yet. If the caller does not have their policy number, explain "
-            "this demo cannot look it up without one. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
-        ),
-        fields=CHECKLIST,
-        completion_criteria="Complete as soon as the policy number, name and phone are recorded. Do not read them back or re-confirm them.",
-    )
-
-
-def _announce_mismatch(call, bridge):
-    from ..coordinator import CALL_ENDING_RULE
-
-    logger.info('Policy completion mismatch')
-    bridge.set_task(call,
-        "policy-verification-mismatch",
-        objective=(
-            "Explain that the caller's identity could not be verified against "
-            "the policy. Do not reveal the name or phone on file. The demo "
-            "does not yet have a human-assistance handoff; do not claim to "
-            "transfer or escalate, or to create or submit a claim. " + CALL_ENDING_RULE
-        ),
-    )
-
-
-def next_action(call, state, bridge, on_verified, on_unavailable):
-    lookup = state.result('fetch_policy')
-    if lookup is None:
-        def fetch_policy():
-            number = bridge.get_field(call, "policy_number")
-            with api_adapter.APIAdapter() as api:
-                return api.get_policy(normalize_policy_number(number) if isinstance(number, str) else "")
-
-        return Action('fetch_policy', 'api', fetch_policy, (api_adapter.APIError,))
-    if state.result('announce_verification') is not None:
-        return None
-    if not lookup.ok:
-        def announce_unavailable():
-            logger.info('Policy completion unavailable')
-            return on_unavailable(call)
-
-        return Action('announce_verification', 'guava', announce_unavailable)
-    if check_identity_match(lookup.data, bridge.get_field(call, "caller_name"), bridge.get_field(call, "caller_phone")):
-        state.verified_profile = lookup.data
-    if state.verified_profile is not None:
-        def announce_verified():
-            logger.info('Policy completion verified')
-            return on_verified(call, state.verified_profile)
-
-        return Action('announce_verification', 'guava', announce_verified)
-    return Action('announce_verification', 'guava', lambda: _announce_mismatch(call, bridge))
+    return Action('fetch_policy', 'api', fetch_policy, (api_adapter.APIError,))
 
 
 def register(agent, bridge: CallBridge):

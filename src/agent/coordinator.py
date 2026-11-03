@@ -6,11 +6,13 @@ from . import checklist
 from .action_loop import Action, advance
 from .bridge import CallBridge, FieldDefinition
 from .call_state import InMemoryStateStore
-from .workflows import assistance, claim_intake, policy_lookup
+from .workflows import assistance, claim_intake, identity, policy_lookup, review_claim, submit_claim
 
 DEFAULT_PURPOSE = "Verify the caller's GEICO policy, then help them report an auto loss."
 REQUEST_TASK_ID = "confirm-request"
-COMPLETION_TASKS = (REQUEST_TASK_ID, *policy_lookup.TASK_IDS, *claim_intake.TASK_IDS, *assistance.TASK_IDS)
+COMPLETION_TASKS = (REQUEST_TASK_ID, *identity.TASK_IDS, *claim_intake.TASK_IDS, *review_claim.TASK_IDS, *submit_claim.TASK_IDS, *assistance.TASK_IDS)
+CAPTURES = {identity.TASK_ID: identity.capture, claim_intake.TASK_ID: claim_intake.capture,
+            review_claim.REVIEW_TASK_ID: review_claim.capture}
 REPORT_OWN_LOSS = "report_own_loss"
 OTHER_REQUEST = "other_request"
 # Shared guardrail appended to workflow objectives.
@@ -66,7 +68,7 @@ def next_start_action(call, state, bridge):
     if state.result('start_verification') is not None or state.result('start_assistance') is not None:
         return None
     if check.ok:
-        return Action('start_verification', 'guava', lambda: policy_lookup.start(call, bridge))
+        return Action('start_verification', 'guava', lambda: identity.start(call, bridge))
     return Action('start_assistance', 'guava', lambda: assistance.start(call, bridge))
 
 
@@ -85,7 +87,11 @@ def start_call(call, bridge: CallBridge):
 
 def on_task_complete(call, task_id, bridge, get_state=None, routes=None):
     state = get_state(call) if get_state is not None else state_for(call, bridge)
-    state.mark_done(task_id)
+    if not state.done(task_id):
+        state.mark_done(task_id)
+        capture = CAPTURES.get(task_id)
+        if capture is not None:
+            capture(call, state, bridge)
     run_checklist(call, state, bridge, routes)
 
 
@@ -101,16 +107,21 @@ def on_verified(call, profile, bridge: CallBridge) -> None:
         'policy_number': profile.policy_number, 'policyholder': profile.name,
         'vehicles': [claim_intake.vehicle_label(vehicle) for vehicle in profile.vehicles],
     })
+    state = state_for(call, bridge)
+    if state.fact('request_type') == REPORT_OWN_LOSS:
+        claim_intake.start(call, bridge, state, say=[identity.VERIFIED_LINE])
+        return
     bridge.set_task(call,
         REQUEST_TASK_ID,
+        say=[identity.VERIFIED_LINE],
         completion_criteria="Complete as soon as the request type is recorded.",
         objective=(
             f"Identity is verified for policy {profile.policy_number} in this mock "
-            "demo; tell the caller. Then record what they are calling about. If "
-            "they already said, record it without asking. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
+            "demo. Record what they are calling about. If "
+            "they already said, record it without asking. Use the field's question wording exactly. " + KEEP_CONTEXT_RULE + CALL_ENDING_RULE
         ),
         fields=[FieldDefinition(
-            key="request_type",
+            key="request_type", question="What are you calling about today?",
             description="Whether the caller is reporting a loss on their own policy, or something else.",
             field_type="multiple_choice",
             choices=(REPORT_OWN_LOSS, OTHER_REQUEST),
@@ -126,7 +137,7 @@ def next_request_action(call, state, bridge):
 
     def start_request():
         if bridge.get_field(call, "request_type") == REPORT_OWN_LOSS:
-            claim_intake.start(call, bridge, state.verified_profile)
+            claim_intake.start(call, bridge, state)
             return
         bridge.set_task(call,
             "unsupported-request",
@@ -176,9 +187,11 @@ def on_immediate_danger_or_other(call, bridge: CallBridge) -> None:
 
 def on_question(call, question, bridge) -> str:
     state = state_for(call, bridge)
-    submitted = state.result('submit_claim')
-    if submitted is not None and submitted.ok:
-        answer = f'Known facts: the claim has been submitted. Its claim number is {submitted.data.claim_number}.'
+    submitted = submit_claim.submitted_claim(state)
+    if submitted is not None:
+        answer = f'Known facts: the claim has been submitted. Its claim number is {submitted.claim_number}.'
+    elif submit_claim.submission_uncertain(state):
+        answer = 'Known facts: it is not confirmed whether the claim was filed, and no claim number is available. Do not say it succeeded or failed.'
     elif state.verified_profile is not None:
         answer = ('Known facts: the claim has not been submitted. The details are still being collected and '
                   'will be read back for approval first.')

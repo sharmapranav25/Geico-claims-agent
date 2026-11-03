@@ -7,9 +7,9 @@ from unittest.mock import Mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from agent import api_adapter, checklist, coordinator
+from agent import api_adapter, checklist, coordinator, verification
 from agent.call_state import CallState
-from agent.workflows import claim_intake
+from agent.workflows import claim_intake, review_claim, submit_claim
 
 VEHICLES = (
     SimpleNamespace(vehicle_id='V01-1', year=2021, make='Toyota', model='Camry'),
@@ -37,6 +37,9 @@ class FakeBridge:
         self.say.append(tuple(say))
         self.completion_criteria[task_id] = completion_criteria
 
+    def add_info(self, call, label, info):
+        pass
+
     def get_field(self, call, key):
         return call.get(key)
 
@@ -59,7 +62,7 @@ def api(monkeypatch):
 
 def registered(profile=PROFILE):
     bridge = FakeBridge()
-    state = CallState('test-session', verified_profile=profile)
+    state = CallState('test-session', verified_profile=profile, facts=tuple((key, FIELDS[key]) for key in ('caller_name', 'caller_phone')))
     bridge.state = state
     claim_intake.register(object(), bridge)
     coordinator.register_completions(object(), bridge, lambda call: state, checklist.Routes(
@@ -70,7 +73,7 @@ def registered(profile=PROFILE):
 
 def test_start_offers_only_this_policys_vehicles():
     bridge = FakeBridge()
-    claim_intake.start({}, bridge, PROFILE)
+    claim_intake.start({}, bridge, CallState('start', verified_profile=PROFILE))
     task_id, _, fields = bridge.tasks[0]
     assert task_id == claim_intake.TASK_ID
     vehicle = next(field for field in fields if field.key == 'vehicle')
@@ -82,8 +85,8 @@ def test_occurred_at_rejects_future_with_fixed_now():
     from datetime import datetime
 
     now = datetime.fromisoformat('2026-11-02T12:00:00-08:00')
-    assert claim_intake.validate_occurred_at('2026-11-01T15:00:00-08:00', now=now) is True
-    valid, reason = claim_intake.validate_occurred_at('2026-11-02T15:00:00-08:00', now=now)
+    assert verification.validate_occurred_at('2026-11-01T15:00:00-08:00', now=now) is True
+    valid, reason = verification.validate_occurred_at('2026-11-02T15:00:00-08:00', now=now)
     assert valid is False
     assert 'has not happened yet' in reason
 
@@ -92,11 +95,10 @@ def test_single_vehicle_is_used_without_a_field(api):
     profile = SimpleNamespace(policy_number=PROFILE.policy_number, vehicles=VEHICLES[:1])
     bridge = registered(profile)
     call = {key: value for key, value in FIELDS.items() if key != 'vehicle'}
-    claim_intake.start(call, bridge, profile)
+    claim_intake.start(call, bridge, bridge.state)
     _, objective, fields = bridge.tasks[-1]
     assert 'vehicle' not in {field.key for field in fields}
-    assert 'The vehicle on this policy is 2021 Toyota Camry.' in objective
-    assert 'Do not ask which vehicle' in objective
+    assert bridge.state.fact('vehicle') == '2021 Toyota Camry'
     bridge.completions[claim_intake.TASK_ID](call)
     assert api.update_claim_draft.call_args.args[1].vehicle_id == 'V01-1'
     assert '2021 Toyota Camry' in bridge.say[-1][0]
@@ -106,17 +108,17 @@ def test_single_vehicle_is_used_without_a_field(api):
 def test_collection_and_review_completion_criteria(api):
     bridge = registered()
     call = dict(FIELDS)
-    claim_intake.start(call, bridge, PROFILE)
+    claim_intake.start(call, bridge, bridge.state)
     bridge.completions[claim_intake.TASK_ID](call)
     assert bridge.completion_criteria[claim_intake.TASK_ID] == (
         'Complete as soon as every field is recorded. Do not ask for extra confirmation; '
         'the application reads the details back next.'
     )
-    assert bridge.completion_criteria[claim_intake.REVIEW_TASK_ID] == 'Complete as soon as the decision is recorded.'
+    assert bridge.completion_criteria[review_claim.REVIEW_TASK_ID] == 'Complete as soon as the decision is recorded.'
 
 
 def test_review_line_strips_trailing_periods_and_spaces():
-    line = claim_intake.review_line(dict(FIELDS, location='Main and 5th... ', description='Rear-ended at a light. . '))
+    line = review_claim.review_line(dict(FIELDS, location='Main and 5th... ', description='Rear-ended at a light. . '))
     assert '..' not in line
     assert 'Where: Main and 5th. What happened: Rear-ended at a light. Type of loss:' in line
 
@@ -157,7 +159,7 @@ def test_unverified_call_saves_nothing(api):
 
 @pytest.mark.parametrize('value,valid', [
     ('2026-11-01T15:00:00', True), ('2026-11-01T15:00:00-08:00', True),
-    ('yesterday', False), ('', False), (None, False),
+    ('yesterday', False), ('', True), (None, True),
 ])
 def test_occurred_at_validation(value, valid):
     result = registered().validators['occurred_at']({}, value)
@@ -175,7 +177,7 @@ def reviewed_call(api):
 def test_review_speaks_every_field_without_claiming_submission(api):
     bridge, call = reviewed_call(api)
     line, = bridge.say[-1]
-    assert line == claim_intake.review_line(claim_intake.current_claim_fields(call, bridge, PROFILE))
+    assert line == review_claim.review_line(claim_intake.claim_facts(bridge.state))
     for key in claim_intake.CLAIM_FIELDS:
         value = call[key] if key != 'occurred_at' else 'Sunday, November 1 at 3:00 PM'
         assert value in line
@@ -187,7 +189,7 @@ def test_review_speaks_every_field_without_claiming_submission(api):
 def test_no_explicit_approval_does_not_submit(api, decision):
     bridge, call = reviewed_call(api)
     call['submission_decision'] = decision
-    bridge.completions[claim_intake.REVIEW_TASK_ID](call)
+    bridge.completions[review_claim.REVIEW_TASK_ID](call)
     assert bridge.tasks[-1][0] == 'claim-not-submitted'
     api.submit_claim_draft.assert_not_called()
 
@@ -195,16 +197,16 @@ def test_no_explicit_approval_does_not_submit(api, decision):
 def test_approve_submits_once_with_current_review_and_real_number(api, caplog):
     bridge, call = reviewed_call(api)
     call['submission_decision'] = 'approve'
-    with caplog.at_level('INFO', logger=claim_intake.__name__):
-        bridge.completions[claim_intake.REVIEW_TASK_ID](call)
+    with caplog.at_level('INFO', logger='agent.workflows'):
+        bridge.completions[review_claim.REVIEW_TASK_ID](call)
         reference = bridge.state.submission_reference
-        bridge.completions[claim_intake.REVIEW_TASK_ID](call)
+        bridge.completions[review_claim.REVIEW_TASK_ID](call)
     assert reference.startswith('sub-')
     assert bridge.state.submission_reference == reference
     api.submit_claim_draft.assert_called_once_with(PROFILE.policy_number, submission_reference=reference)
     assert bridge.state.approved_fields == {key: call[key] for key in claim_intake.CLAIM_FIELDS}
-    assert bridge.tasks[-1][0] == claim_intake.SUBMITTED_TASK_ID
-    assert bridge.say[-1] == (f'Your claim has been submitted. Your claim number is CLM-A1B2C3D4. {claim_intake.PORTAL_LINE} Is there anything else you need?',)
+    assert bridge.tasks[-1][0] == submit_claim.SUBMITTED_TASK_ID
+    assert bridge.say[-1] == (f'Your claim has been submitted. Your claim number is CLM-A1B2C3D4. {submit_claim.PORTAL_LINE} Is there anything else you need?',)
     assert 'Claim submitted' in caplog.messages
     assert 'CLM-A1B2C3D4' not in caplog.text and reference not in caplog.text
     assert call['description'] not in caplog.text
@@ -217,33 +219,34 @@ def test_missing_or_changed_review_cannot_submit(api, missing_review, changed_fi
     if missing_review:
         del bridge.state.results['start_review']
     else:
-        call[changed_field] = 'changed'
-    bridge.completions[claim_intake.REVIEW_TASK_ID](call)
+        bridge.state.set_fact(changed_field, 'changed')
+    bridge.completions[review_claim.REVIEW_TASK_ID](call)
     api.submit_claim_draft.assert_not_called()
     assert bridge.tasks[-1][0] == 'claim-not-submitted'
 
 
 def test_unverified_state_cannot_submit(api):
     bridge = registered(profile=None)
-    bridge.completions[claim_intake.REVIEW_TASK_ID](dict(FIELDS, submission_decision='approve'))
+    bridge.completions[review_claim.REVIEW_TASK_ID](dict(FIELDS, submission_decision='approve'))
     api.submit_claim_draft.assert_not_called()
     assert bridge.tasks == []
 
 
 @pytest.mark.parametrize('error,task', [
-    (api_adapter.APIUnavailableError('private transport detail'), 'assistance-offer'),
-    (api_adapter.APIResponseError('private response detail'), 'assistance-offer'),
+    (api_adapter.APIUnavailableError('private transport detail'), 'claim-status-unknown'),
+    (api_adapter.APIResponseError('private response detail'), 'claim-status-unknown'),
     (api_adapter.ClaimValidationError('private validation detail', 400), 'claim-submit-failed'),
 ])
 def test_submission_failure_never_announces_claim(api, caplog, error, task):
     bridge, call = reviewed_call(api)
     call['submission_decision'] = 'approve'
     api.submit_claim_draft.side_effect = error
-    with caplog.at_level('INFO', logger=claim_intake.__name__):
-        bridge.completions[claim_intake.REVIEW_TASK_ID](call)
+    api.get_claim_by_reference.side_effect = api_adapter.APIUnavailableError('unavailable')
+    with caplog.at_level('INFO', logger='agent.workflows'):
+        bridge.completions[review_claim.REVIEW_TASK_ID](call)
     assert bridge.tasks[-1][0] == task
     assert 'Claim submitted' not in caplog.messages
-    assert bridge.say[-1] == ()
+    assert bridge.say[-1] == (() if task == 'claim-submit-failed' else ("I can't confirm whether your claim was filed, so please don't file it again yet. No claim number is available right now.",))
     assert 'private' not in caplog.text
     assert bridge.state.result('submit_claim').ok is False
 
@@ -252,11 +255,138 @@ def test_submission_failure_never_announces_claim(api, caplog, error, task):
 def test_submitted_call_closes_once_only_when_done(api, needs_help):
     bridge, call = reviewed_call(api)
     call.update(submission_decision='approve', needs_more_help=needs_help)
-    bridge.completions[claim_intake.REVIEW_TASK_ID](call)
-    bridge.completions[claim_intake.SUBMITTED_TASK_ID](call)
-    bridge.completions[claim_intake.SUBMITTED_TASK_ID](call)
+    bridge.completions[review_claim.REVIEW_TASK_ID](call)
+    bridge.completions[submit_claim.SUBMITTED_TASK_ID](call)
+    bridge.completions[submit_claim.SUBMITTED_TASK_ID](call)
     if needs_help == 'no':
         bridge.end_call_success.assert_called_once_with(call)
     else:
         bridge.end_call_success.assert_not_called()
         assert bridge.tasks[-1][0] == 'claim-more-help'
+
+
+def test_existing_facts_omit_fields_but_keep_correction_fields(api):
+    bridge = registered()
+    bridge.state.set_fact('location', 'Already known')
+    claim_intake.start({}, bridge, bridge.state)
+    fields = {field.key: field for field in bridge.tasks[-1][2]}
+    assert 'location' not in fields
+    assert {'corrected_field', 'corrected_value'} <= fields.keys()
+    assert all(not fields[key].required for key in ('occurred_at', 'description', 'loss_type', 'corrected_field', 'corrected_value'))
+
+
+def test_all_facts_present_has_no_fields_and_advances(api):
+    bridge = registered()
+    for key, value in FIELDS.items():
+        bridge.state.set_fact(key, value)
+    claim_intake.start({}, bridge, bridge.state, say=['Ready.'])
+    assert bridge.tasks[-1][2] == []
+    assert bridge.say[-1] == ('Ready.',)
+    bridge.completions[claim_intake.TASK_ID]({})
+    assert api.update_claim_draft.call_args.args[1].location == FIELDS['location']
+    assert bridge.tasks[-1][0] == review_claim.REVIEW_TASK_ID
+
+
+def test_correction_during_collection(api):
+    bridge = registered()
+    bridge.completions[claim_intake.TASK_ID](dict(FIELDS, corrected_field='location', corrected_value='Oak Street'))
+    assert bridge.state.fact('location') == 'Oak Street'
+    assert api.update_claim_draft.call_args.args[1].location == 'Oak Street'
+
+
+@pytest.mark.parametrize('missing', claim_intake.REQUIRED_FACTS)
+def test_skipped_required_fact_never_saves(api, missing):
+    bridge = registered()
+    call = dict(FIELDS)
+    call.pop(missing)
+    bridge.completions[claim_intake.TASK_ID](call)
+    assert bridge.tasks[-1][0] == 'claim-missing-details'
+    api.update_claim_draft.assert_not_called()
+    api.submit_claim_draft.assert_not_called()
+
+
+def test_optional_loss_type_stays_none(api):
+    bridge = registered()
+    call = dict(FIELDS)
+    call.pop('loss_type')
+    bridge.completions[claim_intake.TASK_ID](call)
+    assert api.update_claim_draft.call_args.args[1].loss_type is None
+    assert 'Type of loss: not provided.' in bridge.say[-1][0]
+
+
+@pytest.mark.parametrize('decision,value,valid', [('change', 'Oak Street', True), ('change', ' ', False),
+    ('add', 'The bumper broke.', True), ('add', ' ', False)])
+def test_review_changes_and_additions(api, decision, value, valid):
+    bridge, call = reviewed_call(api)
+    original = bridge.state.fact('description')
+    bridge.state.approved_fields = claim_intake.claim_facts(bridge.state)
+    call.update(submission_decision=decision, corrected_field='location', corrected_value=value)
+    bridge.completions[review_claim.REVIEW_TASK_ID](call)
+    assert bridge.state.corrections == 1
+    assert api.update_claim_draft.call_count == (2 if valid else 1)
+    assert bridge.tasks[-1][0] == review_claim.REVIEW_TASK_ID
+    if valid:
+        assert bridge.state.approved_fields is None
+        expected = value if decision == 'change' else original.rstrip('. ') + '. ' + value
+        assert bridge.state.fact('location' if decision == 'change' else 'description') == expected
+        assert value in bridge.say[-1][0]
+    else:
+        assert bridge.say[-1][0].startswith("I couldn't use that change. ")
+        assert bridge.state.fact('description') == original
+        assert bridge.state.fact('location') == FIELDS['location']
+    call['submission_decision'] = 'approve'
+    bridge.completions[review_claim.REVIEW_TASK_ID](call)
+    bridge.completions[review_claim.REVIEW_TASK_ID](call)
+    api.submit_claim_draft.assert_called_once()
+    assert bridge.state.approved_fields == claim_intake.claim_facts(bridge.state)
+
+
+@pytest.mark.parametrize('decision', ['add', 'change'])
+def test_corrections_stop_at_limit(api, decision):
+    bridge, call = reviewed_call(api)
+    for index in range(review_claim.MAX_CORRECTIONS):
+        call.update(submission_decision=decision, corrected_field='location', corrected_value=f'Detail {index}')
+        bridge.completions[review_claim.REVIEW_TASK_ID](call)
+    before = bridge.state.facts
+    bridge.completions[review_claim.REVIEW_TASK_ID](call)
+    assert bridge.state.corrections == review_claim.MAX_CORRECTIONS
+    assert bridge.state.facts == before
+    assert bridge.tasks[-1][0] == 'claim-not-submitted'
+    api.submit_claim_draft.assert_not_called()
+
+
+@pytest.mark.parametrize('status,retry', [('found', False), ('missing', True), ('unavailable', False), ('retry_failed', True)])
+def test_uncertain_submission_checks_before_retry(api, status, retry):
+    bridge, call = reviewed_call(api)
+    claim = SimpleNamespace(claim_number='CLM-RECOVERED')
+    error = api_adapter.APIUnavailableError('timeout')
+    api.submit_claim_draft.side_effect = [error, error if status == 'retry_failed' else claim]
+    if status == 'found':
+        api.get_claim_by_reference.return_value = claim
+    else:
+        api.get_claim_by_reference.side_effect = (api_adapter.PolicyNotFoundError('missing', 404)
+            if retry else api_adapter.APIUnavailableError('offline'))
+    call['submission_decision'] = 'approve'
+    bridge.completions[review_claim.REVIEW_TASK_ID](call)
+    bridge.completions[review_claim.REVIEW_TASK_ID](call)
+    reference = bridge.state.submission_reference
+    api.get_claim_by_reference.assert_called_once_with(PROFILE.policy_number, reference)
+    assert api.submit_claim_draft.call_count == 1 + retry
+    assert all(entry.kwargs['submission_reference'] == reference for entry in api.submit_claim_draft.call_args_list)
+    relevant = [entry[0] for entry in api.mock_calls if entry[0] in ('submit_claim_draft', 'get_claim_by_reference')]
+    assert relevant == ['submit_claim_draft', 'get_claim_by_reference'] + (['submit_claim_draft'] if retry else [])
+    if status in ('found', 'missing'):
+        assert 'CLM-RECOVERED' in bridge.say[-1][0]
+    else:
+        assert bridge.tasks[-1][0] == 'claim-status-unknown'
+        assert 'CLM-' not in bridge.say[-1][0]
+        assert submit_claim.submission_uncertain(bridge.state)
+
+
+@pytest.mark.parametrize('ending', ['.', '!', '?', '... '])
+def test_addition_has_no_doubled_sentence_punctuation(ending):
+    bridge = registered()
+    bridge.state.set_fact('description', 'First detail' + ending)
+    claim_intake.apply_addition(bridge.state, 'Second detail.')
+    assert bridge.state.fact('description') == 'First detail. Second detail.'
+    assert bridge.state.corrections == 1

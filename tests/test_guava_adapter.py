@@ -174,14 +174,14 @@ def test_bridge_registers_validation_and_completion(adapter):
 @pytest.mark.parametrize('number', ['1001', '10 01', '10-01', ' 1001 '])
 @pytest.mark.parametrize('name,task', [
     ('Michael Johnson', 'confirm-request'),
-    ('Jordan Smith', 'policy-verification-mismatch'),
+    ('Jordan Smith', 'verify-policy'),
 ])
 def test_policy_callbacks_normalize_through_sdk_dispatch(adapter, monkeypatch, number, name, task):
     from types import SimpleNamespace
 
     from guava.events import TaskCompletedEvent
     from agent import api_adapter
-    from agent.workflows import policy_lookup
+    from agent.workflows import policy_lookup, identity
 
     client = Mock()
     client.get_policy.return_value = SimpleNamespace(
@@ -193,12 +193,14 @@ def test_policy_callbacks_normalize_through_sdk_dispatch(adapter, monkeypatch, n
     factory.return_value.__exit__ = Mock(return_value=False)
     monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
     call = MockCall()
-    policy_lookup.start(call, adapter.SDK_BRIDGE)
+    identity.start(call, adapter.SDK_BRIDGE)
     call.set_field('policy_number', number)
     call.set_field('caller_name', name)
     call.set_field('caller_phone', '628-268-8753')
 
-    adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id=policy_lookup.TASK_ID))
+    adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id=identity.TASK_ID))
+    call.set_field('identity_confirmed', 'yes')
+    adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id=identity.CONFIRM_TASK_ID))
 
     assert client.get_policy.call_count == 2
     assert all(args.args == ('1001',) for args in client.get_policy.call_args_list)
@@ -208,7 +210,7 @@ def test_policy_callbacks_normalize_through_sdk_dispatch(adapter, monkeypatch, n
 def test_policy_validation_failure_retries_without_completion(adapter, monkeypatch, caplog):
     from guava.events import TaskCompletedEvent
     from agent import api_adapter
-    from agent.workflows import policy_lookup
+    from agent.workflows import policy_lookup, identity
 
     client = Mock()
     client.get_policy.side_effect = api_adapter.PolicyNotFoundError('missing', 404)
@@ -216,18 +218,18 @@ def test_policy_validation_failure_retries_without_completion(adapter, monkeypat
     factory.return_value.__enter__ = Mock(return_value=client)
     factory.return_value.__exit__ = Mock(return_value=False)
     monkeypatch.setattr(api_adapter, 'APIAdapter', factory)
-    completed = Mock(wraps=adapter.agent._on_task_complete_handlers[policy_lookup.TASK_ID])
-    adapter.agent._on_task_complete_handlers[policy_lookup.TASK_ID] = completed
+    completed = Mock(wraps=adapter.agent._on_task_complete_handlers[identity.TASK_ID])
+    adapter.agent._on_task_complete_handlers[identity.TASK_ID] = completed
     call = MockCall()
-    policy_lookup.start(call, adapter.SDK_BRIDGE)
+    identity.start(call, adapter.SDK_BRIDGE)
     call.set_field('policy_number', '9999')
     call.set_field('caller_name', 'Jordan Smith')
     call.set_field('caller_phone', '555-555-0100')
     with patch.object(call, 'retry_task', wraps=call.retry_task) as retry:
         with caplog.at_level('INFO', logger=policy_lookup.__name__):
-            adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id=policy_lookup.TASK_ID))
+            adapter.agent._dispatch_event(call, TaskCompletedEvent(task_id=identity.TASK_ID))
     retry.assert_called_once()
-    assert 'not found' in retry.call_args.kwargs['reason']
+    assert "couldn't find" in retry.call_args.kwargs['reason']
     completed.assert_not_called()
     client.get_policy.assert_called_once_with('9999')
     assert len(call._command_queue) == 2

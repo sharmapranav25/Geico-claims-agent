@@ -3,14 +3,13 @@
 import json
 import logging
 import os
-import re
-from datetime import datetime, time
+from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from .. import api_adapter
 from ..action_loop import Action
 from ..bridge import FieldDefinition
+from ..verification import CALLBACK_ZONE, parse_callback_time, valid_callback_phone
 
 logger = logging.getLogger(__name__)
 OFFER_TASK_ID = 'assistance-offer'
@@ -19,7 +18,6 @@ CALLBACK_TASK_ID = 'collect-callback'
 TASK_IDS = (OFFER_TASK_ID, CALLBACK_OFFER_TASK_ID, CALLBACK_TASK_ID)
 UNAVAILABLE_LINE = "I'm sorry, I'm unable to assist you right now. Would you like to talk to a GEICO representative?"
 NO_REP_LINE = 'No GEICO representatives are available right now. Would you like to schedule a callback? We call back on weekdays between 9 AM and 4 PM Pacific.'
-CALLBACK_ZONE = ZoneInfo('America/Los_Angeles')
 
 
 def check_api():
@@ -29,29 +27,6 @@ def check_api():
 
 def check_api_action():
     return Action('check_api', 'api', check_api, (api_adapter.APIError, ValueError))
-
-
-def parse_callback_time(value, now=None):
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    parsed = parsed.replace(tzinfo=CALLBACK_ZONE) if parsed.tzinfo is None else parsed.astimezone(CALLBACK_ZONE)
-    now = now if now is not None else datetime.now(CALLBACK_ZONE)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=CALLBACK_ZONE)
-    if parsed <= now or parsed.weekday() >= 5 or not time(9) <= parsed.time() <= time(16):
-        return None
-    return parsed
-
-
-def valid_callback_phone(value):
-    if not isinstance(value, str):
-        return False
-    digits = re.sub(r'\D', '', value)
-    return len(digits) == 10 or (len(digits) == 11 and digits.startswith('1'))
 
 
 def callback_file():

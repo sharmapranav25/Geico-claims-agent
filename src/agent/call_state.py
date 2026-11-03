@@ -22,6 +22,33 @@ class CallState:
     approved_fields: dict[str, Any] | None = None
     submission_reference: str | None = None
 
+    facts: tuple[tuple[str, Any], ...] = ()
+    identity_retries: int = 0
+    spell_name: bool = False
+    review_decision: str | None = None
+    corrections: int = 0
+    review_prefix: str = ""
+
+    def fact(self, key):
+        return dict(self.facts).get(key)
+
+    def set_fact(self, key, value):
+        if self.fact(key) != value:
+            facts = self.facts_dict()
+            facts[key] = value
+            self.facts = tuple(facts.items())
+            self.approved_fields = None
+
+    def facts_dict(self):
+        return dict(self.facts)
+
+    def clear_results(self, *names):
+        for name in names:
+            self.results.pop(name, None)
+
+    def clear_done(self, *task_ids):
+        self.completed_tasks.difference_update(task_ids)
+
     def mark_done(self, task_id):
         self.completed_tasks.add(task_id)
 
